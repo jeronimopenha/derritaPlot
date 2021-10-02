@@ -128,7 +128,7 @@ class TestBenches:
             )
         )
 
-        tb.to_verilog("../test_benches/xor_bit_counter_3b_text_bench.v")
+        tb.to_verilog("../test_benches/xor_bit_counter_3b_test_bench.v")
         sim = simulation.Simulator(tb, sim='iverilog')
         rslt = sim.run()
 
