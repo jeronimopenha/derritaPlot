@@ -326,7 +326,7 @@ class TestBenches:
         a = 1
 
 
-test_benches = TestBenches()
-test_benches.create_histogram_memory_test_bench()
-test_benches.create_grn_test_bench('../Benchmarks/Benchmark_5.txt')
-test_benches.create_xor_bit_counter_3b_test_bench()
+#test_benches = TestBenches()
+#test_benches.create_histogram_memory_test_bench()
+#test_benches.create_grn_test_bench('../Benchmarks/Benchmark_5.txt')
+#test_benches.create_xor_bit_counter_3b_test_bench()

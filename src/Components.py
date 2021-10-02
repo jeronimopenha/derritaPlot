@@ -201,7 +201,7 @@ class Components:
         return m
 
 
-components = Components()
+#components = Components()
 '''
 print(components.create_histogram_memory(5, 32).to_verilog())
 '''
