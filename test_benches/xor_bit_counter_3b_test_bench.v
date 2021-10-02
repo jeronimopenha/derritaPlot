@@ -1,6 +1,6 @@
 
 
-module tb
+module test_bench
 (
 
 );
@@ -10,7 +10,7 @@ module tb
   wire tb_dp_output_data_valid;
   wire [6-1:0] tb_dp_output_data;
   wire tb_dp_done;
-  wire xbc3_output_valid;
+  wire xbc3_output_data_valid;
   wire [2-1:0] xbc3_output_data;
   wire tb_done;
 
@@ -29,13 +29,13 @@ module tb
   xor_bit_counter_3b
   (
     .clk(tb_clk),
-    .input_valid(tb_dp_output_data_valid),
+    .input_data_valid(tb_dp_output_data_valid),
     .input_data(tb_dp_output_data),
-    .output_valid(xbc3_output_valid),
+    .output_data_valid(xbc3_output_data_valid),
     .output_data(xbc3_output_data)
   );
 
-  assign tb_done = tb_dp_done & ~xbc3_output_valid;
+  assign tb_done = tb_dp_done & ~xbc3_output_data_valid;
 
   initial begin
     tb_clk = 0;
@@ -84,7 +84,6 @@ module data_producer
   reg dp_fsm;
   localparam dp_fsm_to_produce = 0;
   localparam dp_fsm_done = 1;
-  wire [6-1:0] dp_data_out_rom [0:64-1];
 
   always @(posedge dp_clk) begin
     if(dp_rst) begin
@@ -97,9 +96,9 @@ module data_producer
       case(dp_fsm)
         dp_fsm_to_produce: begin
           dp_output_data_valid <= 1;
-          dp_output_data <= dp_data_out_rom[dp_data_counter];
+          dp_output_data <= dp_data_counter;
           dp_data_counter <= dp_data_counter + 1;
-          if(dp_data_counter == 63) begin
+          if(dp_data_counter == 63.0) begin
             dp_fsm <= dp_fsm_done;
           end 
         end
@@ -112,70 +111,6 @@ module data_producer
     end
   end
 
-  assign dp_data_out_rom[0] = 6'b0;
-  assign dp_data_out_rom[1] = 6'b1;
-  assign dp_data_out_rom[2] = 6'b10;
-  assign dp_data_out_rom[3] = 6'b11;
-  assign dp_data_out_rom[4] = 6'b100;
-  assign dp_data_out_rom[5] = 6'b101;
-  assign dp_data_out_rom[6] = 6'b110;
-  assign dp_data_out_rom[7] = 6'b111;
-  assign dp_data_out_rom[8] = 6'b1000;
-  assign dp_data_out_rom[9] = 6'b1001;
-  assign dp_data_out_rom[10] = 6'b1010;
-  assign dp_data_out_rom[11] = 6'b1011;
-  assign dp_data_out_rom[12] = 6'b1100;
-  assign dp_data_out_rom[13] = 6'b1101;
-  assign dp_data_out_rom[14] = 6'b1110;
-  assign dp_data_out_rom[15] = 6'b1111;
-  assign dp_data_out_rom[16] = 6'b10000;
-  assign dp_data_out_rom[17] = 6'b10001;
-  assign dp_data_out_rom[18] = 6'b10010;
-  assign dp_data_out_rom[19] = 6'b10011;
-  assign dp_data_out_rom[20] = 6'b10100;
-  assign dp_data_out_rom[21] = 6'b10101;
-  assign dp_data_out_rom[22] = 6'b10110;
-  assign dp_data_out_rom[23] = 6'b10111;
-  assign dp_data_out_rom[24] = 6'b11000;
-  assign dp_data_out_rom[25] = 6'b11001;
-  assign dp_data_out_rom[26] = 6'b11010;
-  assign dp_data_out_rom[27] = 6'b11011;
-  assign dp_data_out_rom[28] = 6'b11100;
-  assign dp_data_out_rom[29] = 6'b11101;
-  assign dp_data_out_rom[30] = 6'b11110;
-  assign dp_data_out_rom[31] = 6'b11111;
-  assign dp_data_out_rom[32] = 6'b100000;
-  assign dp_data_out_rom[33] = 6'b100001;
-  assign dp_data_out_rom[34] = 6'b100010;
-  assign dp_data_out_rom[35] = 6'b100011;
-  assign dp_data_out_rom[36] = 6'b100100;
-  assign dp_data_out_rom[37] = 6'b100101;
-  assign dp_data_out_rom[38] = 6'b100110;
-  assign dp_data_out_rom[39] = 6'b100111;
-  assign dp_data_out_rom[40] = 6'b101000;
-  assign dp_data_out_rom[41] = 6'b101001;
-  assign dp_data_out_rom[42] = 6'b101010;
-  assign dp_data_out_rom[43] = 6'b101011;
-  assign dp_data_out_rom[44] = 6'b101100;
-  assign dp_data_out_rom[45] = 6'b101101;
-  assign dp_data_out_rom[46] = 6'b101110;
-  assign dp_data_out_rom[47] = 6'b101111;
-  assign dp_data_out_rom[48] = 6'b110000;
-  assign dp_data_out_rom[49] = 6'b110001;
-  assign dp_data_out_rom[50] = 6'b110010;
-  assign dp_data_out_rom[51] = 6'b110011;
-  assign dp_data_out_rom[52] = 6'b110100;
-  assign dp_data_out_rom[53] = 6'b110101;
-  assign dp_data_out_rom[54] = 6'b110110;
-  assign dp_data_out_rom[55] = 6'b110111;
-  assign dp_data_out_rom[56] = 6'b111000;
-  assign dp_data_out_rom[57] = 6'b111001;
-  assign dp_data_out_rom[58] = 6'b111010;
-  assign dp_data_out_rom[59] = 6'b111011;
-  assign dp_data_out_rom[60] = 6'b111100;
-  assign dp_data_out_rom[61] = 6'b111101;
-  assign dp_data_out_rom[62] = 6'b111110;
-  assign dp_data_out_rom[63] = 6'b111111;
 
   initial begin
     dp_output_data_valid = 0;
@@ -193,16 +128,16 @@ endmodule
 module xor_bit_counter_3b
 (
   input clk,
-  input input_valid,
+  input input_data_valid,
   input [6-1:0] input_data,
-  output reg output_valid,
+  output reg output_data_valid,
   output reg [2-1:0] output_data
 );
 
   wire [2-1:0] xor_bit_counter_rom [0:64-1];
 
   always @(posedge clk) begin
-    output_valid <= input_valid;
+    output_data_valid <= input_data_valid;
     output_data <= xor_bit_counter_rom[input_data];
   end
 
@@ -272,7 +207,7 @@ module xor_bit_counter_3b
   assign xor_bit_counter_rom[63] = 2'b0;
 
   initial begin
-    output_valid = 0;
+    output_data_valid = 0;
     output_data = 0;
   end
 

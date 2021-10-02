@@ -13,6 +13,25 @@ def bits(n):
         return int(math.ceil(math.log2(n)))
 
 
+def readGRN(path):
+    functions = []
+    file = open(path).read()
+    file = file.lower()
+    file = re.sub('[=]', ' = ', file)
+    file = re.sub('[(]', ' ( ', file)
+    file = re.sub('[)]', ' ) ', file)
+    for f in file.split('\n'):
+        if f != '':
+            f = re.sub('[-*+%&^><!,.;:/]', '', f)
+            f = ' ' + f + ' '
+            ff = re.sub('  ', ' ', f)
+            while f != ff:
+                f = ff
+                ff = re.sub('  ', ' ', f)
+            functions.append(f)
+    return functions
+
+
 def get_dot_color_by_op(op):
     dic = {
         'add': 'lightblue ',
@@ -176,3 +195,25 @@ def write_file(name, string):
     with open(name, 'w') as fp:
         fp.write(string)
         fp.close()
+
+
+def treat_functions(functions):
+    nodes = []
+    treated_functions = []
+    for function in functions:
+        function = function.lower()
+        # finding the nodes needed
+        if '=' not in function:
+            nodes.append(function.replace(' ', ''))
+            continue
+        else:
+            nodes.append(function.split('=')[0].replace(' ', ''))
+            # cleaning the functions
+            if ' and ' in function:
+                function = function.replace(' and ', ' & ')
+            if ' or ' in function:
+                function = function.replace(' or ', ' | ')
+            if ' not ' in function:
+                function = function.replace(' not ', '~')
+            treated_functions.append(function)
+    return nodes, treated_functions
