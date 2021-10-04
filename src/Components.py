@@ -1,6 +1,7 @@
 from math import ceil, log2
 
 from jinja2.nodes import Pos
+from setuptools.command.bdist_rpm import bdist_rpm
 from veriloggen import *
 
 from utils import initialize_regs, bits, readGRN, treat_functions
@@ -17,7 +18,7 @@ class Components:
     def __init__(self):
         self.cache = {}
 
-    def create_PE(self, nodes, treated_functions, id_width=32, std_comm_width=32):
+    def create_PE(self, nodes, treated_functions, std_comm_width=32):
         # the std_comm_width is the standard width to build the circuit
         # every communication to and from PE will be done with this width
         config_counter_width = 1 if ceil(log2(ceil(len(nodes) / std_comm_width)) * 2) == 0 else ceil(log2(
@@ -28,18 +29,16 @@ class Components:
             return self.cache[name]
         m = Module(name)
 
-        # id for configuration -----------------------------------------------------------------------------------------
-        id = m.Parameter('id', Int(0, id_width, 10))
-        # --------------------------------------------------------------------------------------------------------------
-
         # standard I/O ports -------------------------------------------------------------------------------------------
         clk = m.Input('clk')
         rst = m.Input('rst')
-        # PE configuration signal
-        config = m.Input('config')
-        input_id = m.Input('input_id', id_width)
-        # start_process_signal
-        start = m.Input('start')
+        # --------------------------------------------------------------------------------------------------------------
+
+        # PE configuration signals
+        config_input_done = m.Input('config_input_done')
+        config_input_valid = m.Input('config_input_valid')
+        config_input = m.Input('config_input', std_comm_width)
+        config_output = m.OutputReg('config_output', std_comm_width)
         # --------------------------------------------------------------------------------------------------------------
 
         # used to receive any data to PE -------------------------------------------------------------------------------
@@ -58,89 +57,104 @@ class Components:
 
         # configuration sector -----------------------------------------------------------------------------------------
         m.EmbeddedCode('\n//configuration sector - begin')
-        grn_init_conf = m.Reg('grn_init_conf', ceil(len(nodes) / std_comm_width) * std_comm_width)
-        grn_end_conf = m.Reg('grn_end_conf', ceil(len(nodes) / std_comm_width) * std_comm_width)
+        pe_init_conf = m.Reg('pe_init_conf', ceil(len(nodes) / std_comm_width) * std_comm_width)
+        pe_end_conf = m.Reg('pe_end_conf', ceil(len(nodes) / std_comm_width) * std_comm_width)
 
-        config_counter1 = m.Reg('config_counter1', config_counter_width)
-        config_counter2 = m.Reg('config_counter2', config_counter_width)
+        config_forward = m.Wire('config_forward', std_comm_width)
+        config_output_forward = m.Wire('config_output_forward', std_comm_width)
+
+        if pe_init_conf.width > std_comm_width:
+            config_forward.assign(pe_end_conf[0:pe_end_conf.width - std_comm_width])
+            config_output_forward.assign(pe_init_conf[0:pe_init_conf.width - std_comm_width])
+        else:
+            config_forward.assign(pe_end_conf)
+            config_output_forward.assign(pe_init_conf)
 
         # PE configuration machine
         m.Always(Posedge(clk))(
-            If(rst)(
-                config_counter1(0),
-                config_counter2(0),
-            ).Else(
-                If(config)(
-                    If(input_id == id)(
-                        If(Uand(config_counter1))(
-                            If(~Uand(config_counter2))(
-                                grn_end_conf(Cat(grn_end_conf[0:grn_end_conf.width - std_comm_width], input_data)
-                                             if grn_end_conf.width > std_comm_width else input_data),
-                                config_counter2.inc()
-                            )
-                        ).Else(
-                            grn_init_conf(Cat(grn_init_conf[0:grn_init_conf.width - std_comm_width], input_data)
-                                          if grn_init_conf.width > std_comm_width else input_data),
-                            config_counter1.inc()
-                        )
-                    )
-
-                )
-            )
+            If(config_input_valid)(
+                pe_end_conf(Cat(config_input, pe_end_conf[pe_end_conf.width - std_comm_width:pe_end_conf.width])
+                            if pe_end_conf.width > std_comm_width else config_input),
+                pe_init_conf(Cat(config_forward, pe_init_conf[pe_init_conf.width - std_comm_width:pe_init_conf.width])
+                             if pe_init_conf.width > std_comm_width else config_forward),
+                config_output(config_output_forward),
+            ),
         )
         m.EmbeddedCode('//configuration sector - end')
         # configuration sector - end -----------------------------------------------------------------------------------
 
-        # Acc working control - begin ----------------------------------------------------------------------------------
-        m.EmbeddedCode('\n//Acc working control - begin')
-        grn_input_data_valid = m.Reg('grn_input_data_valid')
-        grn_output_data_valid = m.Wire('grn_output_data_valid')
+        # Internal loop control - begin ----------------------------------------------------------------------------------
+        m.EmbeddedCode('\n//Internal loop control - begin')
+        grn_input_data_valid = m.Reg('grn_input_data_valid', 2)
+        grn_input_data = m.Reg('grn_input_data', len(nodes))
+        grn_output_data_valid = m.Wire('grn_output_data_valid', 2)
         grn_output_data = m.Wire('grn_output_data', len(nodes))
 
-        fsm_process = m.Reg('fsm_process', 3)
+        fsm_process = m.Reg('fsm_process', 5)
         fsm_process_init = m.Localparam('fsm_process_init', 0)
-        fsm_process_loop_init = m.Localparam('fsm_process_loop_init', 1)
-        fsm_process_loop = m.Localparam('fsm_process_loop', 2)
-        fsm_process_discharge = m.Localparam('fsm_process_discharge', 3)
-        fsm_process_verify = m.Localparam('fsm_process_verify', 4)
-        fsm_process_done = m.Localparam('fsm_process_done', 5)
+        fsm_process_loop = m.Localparam('fsm_process_loop', 1)
+        fsm_process_discharge = m.Localparam('fsm_process_discharge', 2)
+        fsm_process_verify = m.Localparam('fsm_process_verify', 3)
+        fsm_process_done = m.Localparam('fsm_process_done', 4)
 
-        acc = m.Reg('acc', len(nodes))
-        base_state = m.Reg('base_state', len(nodes))
+        b_r = m.Reg('b_r', len(nodes))
+        b_r_next = m.Reg('b_r_next', len(nodes))
+        al_r = m.Reg('al_r', len(nodes))
+        bl_r = m.Reg('bl_r', len(nodes))
+        bl_r_v = m.Reg('bl_r_v')
+        flag_first_iteration = m.Reg('flag_first_iteration')
+
+        m.Always(Posedge(clk))(
+            If(grn_output_data_valid[1])(
+                al_r(grn_output_data),
+            ),
+            If(grn_output_data_valid[0])(
+                bl_r(grn_output_data),
+                bl_r_v(1),
+            ).Else(
+                bl_r_v(0),
+            )
+        )
 
         m.Always(Posedge(clk))(
             If(rst)(
-                fsm_process(fsm_process_init)
-            ).Elif(start)(
+                fsm_process(fsm_process_init),
+                grn_input_data_valid(0),
+                done(0),
+            ).Elif(config_input_done)(
                 Case(fsm_process)(
                     When(fsm_process_init)(
-                        # here I initiate the base_state and ACC values
-                        base_state(grn_init_conf[0:base_state.width]),
-                        acc(grn_init_conf[0:base_state.width])
-                    ),
-                    When(fsm_process_loop_init)(
-                        # here I initiate the 1-pass GRN output for base_state
-
+                        # here I initiate the a_r and ACC values
+                        b_r(pe_init_conf[0:b_r.width]),
+                        grn_input_data_valid(2),
+                        b_r_next(pe_init_conf[0:b_r_next.width] + 1),
+                        flag_first_iteration(1),
+                        fsm_process(fsm_process_loop),
                     ),
                     When(fsm_process_loop)(
-
+                        # here I initiate the 1-pass GRN output for a_r
+                        grn_input_data(b_r),
+                        b_r.inc(),
+                        b_r_next.inc(),
+                        grn_input_data_valid(1),
+                        If(b_r_next == pe_init_conf[0:b_r_next.width])(
+                            grn_input_data_valid(0),
+                            fsm_process(fsm_process_discharge),
+                        ),
                     ),
                     When(fsm_process_discharge)(
-
+                        done(1),
                     ),
                     When(fsm_process_verify)(
-                        If(base_state != grn_end_conf)(
-                            grn_init_conf.inc(),
-                            fsm_process(fsm_process_init)
-                        )
                     ),
                     When(fsm_process_done)(
 
                     ),
                 ),
-
             )
         )
+        m.EmbeddedCode('//Internal loop control - end')
+        # Internal loop control - end ----------------------------------------------------------------------------------
 
         # grn module instantiation sector - begin ----------------------------------------------------------------------
         m.EmbeddedCode('\n//grn module instantiation sector - begin')
@@ -148,7 +162,7 @@ class Components:
         con = [
             ('clk', clk),
             ('input_data_valid', grn_input_data_valid),
-            ('input_data', acc),
+            ('input_data', b_r),
             ('output_data_valid', grn_output_data_valid),
             ('output_data', grn_output_data)
         ]
@@ -158,8 +172,162 @@ class Components:
         m.EmbeddedCode('//grn module instantiation sector - end')
         # grn module instantiation sector - end ------------------------------------------------------------------------
 
+        # xor bit counter instantiation sector - begin -----------------------------------------------------------------
+        m.EmbeddedCode('\n//xor bit counter instantiation sector - begin')
+        qtde_xbc3 = ceil(len(nodes) / 3)
+
+        m.EmbeddedCode('\n//first xor bit counter amount instantiation sector - begin')
+        params = []
+
+        xbc3_add_output_data_valid = m.Wire('xbc3_add_output_data_valid', qtde_xbc3)
+        xbc3_add_output_data = m.Wire('xbc3_add_output_data', 2, qtde_xbc3)
+        for i in range(0, qtde_xbc3):
+            b_init = i * 3
+            b_fim = i * 3 + 3 if b_r.width >= i * 3 + 3 else b_r.width
+            dif_width = i * 3 + 3 - b_r.width
+            flag_cat = True if b_r.width >= i * 3 + 3 else False
+            con = [
+                ('clk', clk),
+                ('input_data_valid', grn_input_data_valid[0]),
+                ('input_data', Cat(pe_init_conf[b_init: b_fim], b_r[b_init: b_fim]) if flag_cat else Cat(
+                    Cat(Int(0, dif_width, 10), pe_init_conf[b_init: b_fim]),
+                    Cat(Int(0, dif_width, 10), b_r[b_init: b_fim]))),
+                ('output_data_valid', xbc3_add_output_data_valid[i]),
+                ('output_data', xbc3_add_output_data[i]),
+            ]
+            grn = self.create_xor_bit_counter_3b()
+            m.Instance(grn, grn.name + '_add_' + str(i), params, con)
+
+        m.EmbeddedCode('\n//sum loop for address line sector - begin')
+
+        output_data_units = ['xbc3_add_output_data[' + str(i) + ']' for i in range(qtde_xbc3)]
+        sum_counter = 0
+        reg_counter = 0
+        add_pipe_counter = 1
+        str_embedded = ''
+        while len(output_data_units) > 1:
+            process_items = []
+            add_pipe_counter = add_pipe_counter + 1
+            for i in range(len(output_data_units)):
+                process_items.append(output_data_units.pop())
+            while (len(process_items) > 0):
+                if (len(process_items) > 1):
+                    o_d_u1 = process_items.pop()
+                    o_d_u2 = process_items.pop()
+                    str_embedded = str_embedded + 'sum_add[' + str(
+                        sum_counter) + '] <= ' + o_d_u1 + ' + ' + o_d_u2 + ';\n'
+                    output_data_units.append('sum_add[' + str(sum_counter) + ']')
+                    sum_counter = sum_counter + 1
+                else:
+                    o_d_u = process_items.pop()
+                    str_embedded = str_embedded + 'reg_add[' + str(reg_counter) + '] <= ' + o_d_u + ';\n'
+                    output_data_units.append('reg_add[' + str(reg_counter) + ']')
+                    reg_counter = reg_counter + 1
+        str_embedded = str_embedded + 'reg_add[' + str(reg_counter) + '] <= ' + 'sum_add[' + str(sum_counter - 1) + '];'
+        sum_width = ceil(log2(len(nodes)))
+        sum_add = m.Reg('sum_add', sum_width, sum_counter)
+        reg_add = m.Reg('reg_add', sum_width, reg_counter + 1)
+        reg_add_valid_pipe = m.Reg('reg_add_valid_pipe', add_pipe_counter)
+        wr_address = m.Wire('wr_address',sum_width)
+        wr = m.Wire('wr')
+        wr_address.assign(sum_add[sum_counter-1])
+        wr.assign(reg_add_valid_pipe[add_pipe_counter - 1])
+
+        m.Always(Posedge(clk))(
+            EmbeddedNumeric(str_embedded)
+        )
+
+        str_embedded = 'reg_add_valid_pipe[0] <= xbc3_add_output_data_valid[0];\n'
+        for i in range(1, add_pipe_counter):
+            str_embedded = str_embedded + 'reg_add_valid_pipe[' + str(i) + '] <= reg_add_valid_pipe[' + str(
+                i - 1) + '];\n'
+
+        m.Always(Posedge(clk))(
+            EmbeddedNumeric(str_embedded)
+        )
+
+        m.EmbeddedCode('//sum loop for address line sector - end')
+
+        m.EmbeddedCode('//first xor bit counter amount instantiation sector - end')
+
+        m.EmbeddedCode('\n//second xor bit counter amount instantiation sector - begin')
+        params = []
+
+        xbc3_data_output_data_valid = m.Wire('xbc3_data_output_data_valid', qtde_xbc3)
+        xbc3_data_output_data = m.Wire('xbc3_data_output_data', 2, qtde_xbc3)
+        for i in range(0, qtde_xbc3):
+            b_init = i * 3
+            b_fim = i * 3 + 3 if b_r.width >= i * 3 + 3 else b_r.width
+            dif_width = i * 3 + 3 - b_r.width
+            flag_cat = True if b_r.width >= i * 3 + 3 else False
+            con = [
+                ('clk', clk),
+                ('input_data_valid', grn_output_data_valid[0]),
+                ('input_data', Cat(al_r[b_init: b_fim], grn_output_data[b_init: b_fim]) if flag_cat else Cat(
+                    Cat(Int(0, dif_width, 10), al_r[b_init: b_fim]),
+                    Cat(Int(0, dif_width, 10), grn_output_data[b_init: b_fim]))),
+                ('output_data_valid', xbc3_data_output_data_valid[i]),
+                ('output_data', xbc3_data_output_data[i]),
+            ]
+            grn = self.create_xor_bit_counter_3b()
+            m.Instance(grn, grn.name + '_data_' + str(i), params, con)
+
+        m.EmbeddedCode('\n//sum loop for data line sector - begin')
+        output_data_units = ['xbc3_data_output_data[' + str(i) + ']' for i in range(qtde_xbc3)]
+        sum_counter = 0
+        reg_counter = 0
+        data_pipe_counter = 0
+        str_embedded = ''
+        while len(output_data_units) > 1:
+            process_items = []
+            data_pipe_counter = data_pipe_counter + 1
+            for i in range(len(output_data_units)):
+                process_items.append(output_data_units.pop())
+            while (len(process_items) > 0):
+                if (len(process_items) > 1):
+                    o_d_u1 = process_items.pop()
+                    o_d_u2 = process_items.pop()
+                    str_embedded = str_embedded + 'sum_data[' + str(
+                        sum_counter) + '] <= ' + o_d_u1 + ' + ' + o_d_u2 + ';\n'
+                    output_data_units.append('sum_data[' + str(sum_counter) + ']')
+                    sum_counter = sum_counter + 1
+                else:
+                    o_d_u = process_items.pop()
+                    str_embedded = str_embedded + 'reg_data[' + str(reg_counter) + '] <= ' + o_d_u + ';\n'
+                    output_data_units.append('reg_data[' + str(reg_counter) + ']')
+                    reg_counter = reg_counter + 1
+
+        sum_width = ceil(log2(len(nodes)))
+        sum_data = m.Reg('sum_data', sum_width, sum_counter)
+        reg_data = m.Reg('reg_data', sum_width, reg_counter)
+        reg_data_valid_pipe = m.Reg('reg_data_valid_pipe', data_pipe_counter)
+        wr_data = m.Wire('wr_wr_data', sum_width)
+        wr_data_valid = m.Wire('wr_data_valid')
+        wr_data.assign(sum_data[sum_counter - 1])
+        wr_data_valid.assign(reg_data_valid_pipe[data_pipe_counter - 1])
+
+        m.Always(Posedge(clk))(
+            EmbeddedNumeric(str_embedded)
+        )
+
+        str_embedded = 'reg_data_valid_pipe[0] <= xbc3_data_output_data_valid[0];\n'
+        for i in range(1, data_pipe_counter):
+            str_embedded = str_embedded + 'reg_data_valid_pipe[' + str(i) + '] <= reg_data_valid_pipe[' + str(
+                i - 1) + '];\n'
+
+        m.Always(Posedge(clk))(
+            EmbeddedNumeric(str_embedded)
+        )
+        m.EmbeddedCode('//sum loop for data line sector - end')
+
+        m.EmbeddedCode('//second xor bit counter amount instantiation sector - end')
+
+        m.EmbeddedCode('//xor bit counter instantiation sector - end')
+        # xor bit counter instantiation sector - bed -------------------------------------------------------------------
+
         initialize_regs(m)
         self.cache[name] = m
+
         return m
 
     def create_grn_module(self, nodes, treated_functions):
@@ -173,9 +341,9 @@ class Components:
         m = Module(name)
 
         clk = m.Input('clk')
-        input_data_valid = m.Input('input_data_valid')
+        input_data_valid = m.Input('input_data_valid', 2)
         input_data = m.Input('input_data', data_width)
-        output_data_valid = m.OutputReg('output_data_valid')
+        output_data_valid = m.OutputReg('output_data_valid', 2)
         output_data = m.Output('output_data', data_width)
 
         for node in nodes:
@@ -348,11 +516,12 @@ class Components:
         return m
 
 
-components = Components()
+'''components = Components()
 functions = sorted(readGRN('../Benchmarks/Benchmark_5.txt'))
 # functions = sorted(readGRN('../Benchmarks/B_bronchiseptica.txt'))
 nodes, treated_functions = treat_functions(functions)
 print(components.create_PE(nodes, treated_functions).to_verilog())
+'''
 '''
 print(components.create_histogram_memory(5, 32).to_verilog())
 '''
