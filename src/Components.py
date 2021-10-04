@@ -1,4 +1,6 @@
-from setuptools.command.register import register
+from math import ceil, log2
+
+from jinja2.nodes import Pos
 from veriloggen import *
 
 from utils import initialize_regs, bits, readGRN, treat_functions
@@ -14,6 +16,151 @@ class Components:
 
     def __init__(self):
         self.cache = {}
+
+    def create_PE(self, nodes, treated_functions, id_width=32, std_comm_width=32):
+        # the std_comm_width is the standard width to build the circuit
+        # every communication to and from PE will be done with this width
+        config_counter_width = 1 if ceil(log2(ceil(len(nodes) / std_comm_width)) * 2) == 0 else ceil(log2(
+            ceil(len(nodes) / std_comm_width) * 2))
+
+        name = 'pe'
+        if name in self.cache.keys():
+            return self.cache[name]
+        m = Module(name)
+
+        # id for configuration -----------------------------------------------------------------------------------------
+        id = m.Parameter('id', Int(0, id_width, 10))
+        # --------------------------------------------------------------------------------------------------------------
+
+        # standard I/O ports -------------------------------------------------------------------------------------------
+        clk = m.Input('clk')
+        rst = m.Input('rst')
+        # PE configuration signal
+        config = m.Input('config')
+        input_id = m.Input('input_id', id_width)
+        # start_process_signal
+        start = m.Input('start')
+        # --------------------------------------------------------------------------------------------------------------
+
+        # used to receive any data to PE -------------------------------------------------------------------------------
+        input_data_valid = m.Input('input_data_valid')
+        input_data = m.Input('input_data', std_comm_width)
+        # --------------------------------------------------------------------------------------------------------------
+
+        # used to send any data from PE --------------------------------------------------------------------------------
+        output_data_valid = m.Input('output_data_valid')
+        output_data = m.Input('output_data', std_comm_width)
+        # --------------------------------------------------------------------------------------------------------------
+
+        # PE done_ signal
+        done = m.OutputReg('done')
+        # --------------------------------------------------------------------------------------------------------------
+
+        # configuration sector -----------------------------------------------------------------------------------------
+        m.EmbeddedCode('\n//configuration sector - begin')
+        grn_init_conf = m.Reg('grn_init_conf', ceil(len(nodes) / std_comm_width) * std_comm_width)
+        grn_end_conf = m.Reg('grn_end_conf', ceil(len(nodes) / std_comm_width) * std_comm_width)
+
+        config_counter1 = m.Reg('config_counter1', config_counter_width)
+        config_counter2 = m.Reg('config_counter2', config_counter_width)
+
+        # PE configuration machine
+        m.Always(Posedge(clk))(
+            If(rst)(
+                config_counter1(0),
+                config_counter2(0),
+            ).Else(
+                If(config)(
+                    If(input_id == id)(
+                        If(Uand(config_counter1))(
+                            If(~Uand(config_counter2))(
+                                grn_end_conf(Cat(grn_end_conf[0:grn_end_conf.width - std_comm_width], input_data)
+                                             if grn_end_conf.width > std_comm_width else input_data),
+                                config_counter2.inc()
+                            )
+                        ).Else(
+                            grn_init_conf(Cat(grn_init_conf[0:grn_init_conf.width - std_comm_width], input_data)
+                                          if grn_init_conf.width > std_comm_width else input_data),
+                            config_counter1.inc()
+                        )
+                    )
+
+                )
+            )
+        )
+        m.EmbeddedCode('//configuration sector - end')
+        # configuration sector - end -----------------------------------------------------------------------------------
+
+        # Acc working control - begin ----------------------------------------------------------------------------------
+        m.EmbeddedCode('\n//Acc working control - begin')
+        grn_input_data_valid = m.Reg('grn_input_data_valid')
+        grn_output_data_valid = m.Wire('grn_output_data_valid')
+        grn_output_data = m.Wire('grn_output_data', len(nodes))
+
+        fsm_process = m.Reg('fsm_process', 3)
+        fsm_process_init = m.Localparam('fsm_process_init', 0)
+        fsm_process_loop_init = m.Localparam('fsm_process_loop_init', 1)
+        fsm_process_loop = m.Localparam('fsm_process_loop', 2)
+        fsm_process_discharge = m.Localparam('fsm_process_discharge', 3)
+        fsm_process_verify = m.Localparam('fsm_process_verify', 4)
+        fsm_process_done = m.Localparam('fsm_process_done', 5)
+
+        acc = m.Reg('acc', len(nodes))
+        base_state = m.Reg('base_state', len(nodes))
+
+        m.Always(Posedge(clk))(
+            If(rst)(
+                fsm_process(fsm_process_init)
+            ).Elif(start)(
+                Case(fsm_process)(
+                    When(fsm_process_init)(
+                        # here I initiate the base_state and ACC values
+                        base_state(grn_init_conf[0:base_state.width]),
+                        acc(grn_init_conf[0:base_state.width])
+                    ),
+                    When(fsm_process_loop_init)(
+                        # here I initiate the 1-pass GRN output for base_state
+
+                    ),
+                    When(fsm_process_loop)(
+
+                    ),
+                    When(fsm_process_discharge)(
+
+                    ),
+                    When(fsm_process_verify)(
+                        If(base_state != grn_end_conf)(
+                            grn_init_conf.inc(),
+                            fsm_process(fsm_process_init)
+                        )
+                    ),
+                    When(fsm_process_done)(
+
+                    ),
+                ),
+
+            )
+        )
+
+        # grn module instantiation sector - begin ----------------------------------------------------------------------
+        m.EmbeddedCode('\n//grn module instantiation sector - begin')
+        params = []
+        con = [
+            ('clk', clk),
+            ('input_data_valid', grn_input_data_valid),
+            ('input_data', acc),
+            ('output_data_valid', grn_output_data_valid),
+            ('output_data', grn_output_data)
+        ]
+        grn = self.create_grn_module(nodes, treated_functions)
+        m.Instance(grn, grn.name, params, con)
+
+        m.EmbeddedCode('//grn module instantiation sector - end')
+        # grn module instantiation sector - end ------------------------------------------------------------------------
+
+        initialize_regs(m)
+        self.cache[name] = m
+        return m
 
     def create_grn_module(self, nodes, treated_functions):
         data_width = len(nodes)
@@ -201,7 +348,11 @@ class Components:
         return m
 
 
-#components = Components()
+components = Components()
+functions = sorted(readGRN('../Benchmarks/Benchmark_5.txt'))
+# functions = sorted(readGRN('../Benchmarks/B_bronchiseptica.txt'))
+nodes, treated_functions = treat_functions(functions)
+print(components.create_PE(nodes, treated_functions).to_verilog())
 '''
 print(components.create_histogram_memory(5, 32).to_verilog())
 '''
