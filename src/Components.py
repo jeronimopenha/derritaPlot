@@ -18,7 +18,7 @@ class Components:
     def __init__(self):
         self.cache = {}
 
-    def create_PE(self, nodes, treated_functions, std_comm_width=32):
+    def create_pe(self, nodes, treated_functions, hist_mem_bit_depth, std_comm_width=32):
         # the std_comm_width is the standard width to build the circuit
         # every communication to and from PE will be done with this width
         config_counter_width = 1 if ceil(log2(ceil(len(nodes) / std_comm_width)) * 2) == 0 else ceil(log2(
@@ -41,28 +41,143 @@ class Components:
         config_output = m.OutputReg('config_output', std_comm_width)
         # --------------------------------------------------------------------------------------------------------------
 
-        # used to receive any data to PE -------------------------------------------------------------------------------
-        input_data_valid = m.Input('input_data_valid')
-        input_data = m.Input('input_data', std_comm_width)
-        # --------------------------------------------------------------------------------------------------------------
-
         # used to send any data from PE --------------------------------------------------------------------------------
-        output_data_valid = m.Input('output_data_valid')
-        output_data = m.Input('output_data', std_comm_width)
+        output_data_read = m.Input('output_data_read')
+        output_data_valid = m.OutputReg('output_data_valid')
+        output_data_sum = m.OutputReg('output_data_sum', std_comm_width)
+        output_data_qty = m.OutputReg('output_data_qty', std_comm_width)
         # --------------------------------------------------------------------------------------------------------------
 
         # PE done_ signal
         done = m.OutputReg('done')
         # --------------------------------------------------------------------------------------------------------------
 
-        # configuration sector -----------------------------------------------------------------------------------------
-        m.EmbeddedCode('\n//configuration sector - begin')
+        # configuration wires and regs begin ---------------------------------------------------------------------------
+        m.EmbeddedCode('\n//configuration wires and regs - begin')
         pe_init_conf = m.Reg('pe_init_conf', ceil(len(nodes) / std_comm_width) * std_comm_width)
         pe_end_conf = m.Reg('pe_end_conf', ceil(len(nodes) / std_comm_width) * std_comm_width)
-
         config_forward = m.Wire('config_forward', std_comm_width)
         config_output_forward = m.Wire('config_output_forward', std_comm_width)
+        m.EmbeddedCode('//configuration wires and regs - end')
+        # configuration wires and regs end -----------------------------------------------------------------------------
 
+        # grn instantiation module wires and regs - begin --------------------------------------------------------------
+        m.EmbeddedCode('\n//grn instantiation module wires and regs - begin')
+        grn_input_data_valid = m.Reg('grn_input_data_valid', 2)
+        grn_input_data = m.Reg('grn_input_data', len(nodes))
+        grn_output_data_valid = m.Wire('grn_output_data_valid', 2)
+        grn_output_data = m.Wire('grn_output_data', len(nodes))
+        m.EmbeddedCode('//grn instantiation module wires and regs - end')
+        # grn instantiation module wires and regs - end ----------------------------------------------------------------
+
+        # Internal loop control wires and regs - begin -----------------------------------------------------------------
+        m.EmbeddedCode('\n//Internal loop control wires and regs - begin')
+        last_loop = m.Reg('last_loop')
+        ctrl_hm_rd_add = m.Reg('ctrl_hm_rd_add', hist_mem_bit_depth)
+        b_r = m.Reg('b_r', len(nodes))
+        b_r_next = m.Reg('b_r_next', len(nodes))
+        al_r = m.Reg('al_r', len(nodes))
+        bl_r = m.Reg('bl_r', len(nodes))
+        bl_r_v = m.Reg('bl_r_v')
+        flag_first_iteration = m.Reg('flag_first_iteration')
+        fsm_process = m.Reg('fsm_process', 5)
+        fsm_process_init = m.Localparam('fsm_process_init', 0)
+        fsm_process_loop = m.Localparam('fsm_process_loop', 1)
+        fsm_process_wait_pipeline = m.Localparam('fsm_process_wait_pipeline', 2)
+        fsm_process_discharge = m.Localparam('fsm_process_discharge', 3)
+        fsm_process_verify = m.Localparam('fsm_process_verify', 4)
+        fsm_process_done = m.Localparam('fsm_process_done', 5)
+        m.EmbeddedCode('//Internal loop control wires and regs - end')
+        # Internal loop control wires and regs - end -------------------------------------------------------------------
+
+        # xor bit counters instantiation wires and regs - begin --------------------------------------------------------
+        m.EmbeddedCode('\n//xor bit counters instantiation wires and regs - begin')
+        qty_xbc3 = ceil(len(nodes) / 3)
+        xbc3_add_output_data_valid = m.Wire('xbc3_add_output_data_valid', qty_xbc3)
+        xbc3_add_output_data = m.Wire('xbc3_add_output_data', 2, qty_xbc3)
+        xbc3_data_output_data_valid = m.Wire('xbc3_data_output_data_valid', qty_xbc3)
+        xbc3_data_output_data = m.Wire('xbc3_data_output_data', 2, qty_xbc3)
+        m.EmbeddedCode('//xor bit counters instantiation wires and regs - end')
+        # xor bit counters instantiation wires and regs - end ----------------------------------------------------------
+
+        # Histogram memory instantiation wires and regs - begin --------------------------------------------------------
+        m.EmbeddedCode('\n//Histogram memory instantiation wires and regs - begin')
+        hm_rd_data = m.Wire('hm_rd_data', std_comm_width)
+        hm_rd_qtdy = m.Wire('hm_rd_qtdy', std_comm_width)
+        hm_rdy = m.Wire('hm_rdy')
+        hm_rd_add = m.Wire('hm_rd_add', hist_mem_bit_depth)
+        hm_rd_add_selector = m.Reg('hm_rd_add_selector')
+        m.EmbeddedCode('//Histogram memory instantiation wires and regs - end')
+        # Histogram memory instantiation wires and regs - end ----------------------------------------------------------
+
+        # sum loops for address and data lines wires and regs - begin --------------------------------------------------
+        m.EmbeddedCode('\n//sum loops for address and data lines wires and regs - begin')
+        xbc3_output_buses = ['xbc3_add_output_data[' + str(i) + ']' for i in range(qty_xbc3)]
+        sum_counter = 0
+        reg_counter = 0
+        add_pipe_counter = 1
+        str_embedded_add = ''
+        sum_width = len(nodes)
+        while len(xbc3_output_buses) > 1:
+            process_items = []
+            add_pipe_counter = add_pipe_counter + 1
+            for i in range(len(xbc3_output_buses)):
+                process_items.append(xbc3_output_buses.pop())
+            while (len(process_items) > 0):
+                if (len(process_items) > 1):
+                    o_d_u1 = process_items.pop()
+                    o_d_u2 = process_items.pop()
+                    str_embedded_add = str_embedded_add + 'sum_add[' + str(
+                        sum_counter) + '] <= ' + o_d_u1 + ' + ' + o_d_u2 + ';\n'
+                    xbc3_output_buses.append('sum_add[' + str(sum_counter) + ']')
+                    sum_counter = sum_counter + 1
+                else:
+                    o_d_u = process_items.pop()
+                    str_embedded_add = str_embedded_add + 'reg_add[' + str(reg_counter) + '] <= ' + o_d_u + ';\n'
+                    xbc3_output_buses.append('reg_add[' + str(reg_counter) + ']')
+                    reg_counter = reg_counter + 1
+        str_embedded_add = str_embedded_add + 'reg_add[' + str(reg_counter) + '] <= ' + 'sum_add[' + str(
+            sum_counter - 1) + '];'
+        sum_add = m.Reg('sum_add', sum_width, sum_counter)
+        reg_add = m.Reg('reg_add', sum_width, reg_counter + 1)
+        reg_add_valid_pipe = m.Reg('reg_add_valid_pipe', add_pipe_counter)
+        wr_address = m.Wire('wr_address', hist_mem_bit_depth)
+        wr = m.Wire('wr')
+
+        xbc3_output_buses = ['xbc3_data_output_data[' + str(i) + ']' for i in range(qty_xbc3)]
+        sum_counter = 0
+        reg_counter = 0
+        data_pipe_counter = 0
+        str_embedded_data = ''
+        while len(xbc3_output_buses) > 1:
+            process_items = []
+            data_pipe_counter = data_pipe_counter + 1
+            for i in range(len(xbc3_output_buses)):
+                process_items.append(xbc3_output_buses.pop())
+            while (len(process_items) > 0):
+                if (len(process_items) > 1):
+                    o_d_u1 = process_items.pop()
+                    o_d_u2 = process_items.pop()
+                    str_embedded_data = str_embedded_data + 'sum_data[' + str(
+                        sum_counter) + '] <= ' + o_d_u1 + ' + ' + o_d_u2 + ';\n'
+                    xbc3_output_buses.append('sum_data[' + str(sum_counter) + ']')
+                    sum_counter = sum_counter + 1
+                else:
+                    o_d_u = process_items.pop()
+                    str_embedded_data = str_embedded_data + 'reg_data[' + str(reg_counter) + '] <= ' + o_d_u + ';\n'
+                    xbc3_output_buses.append('reg_data[' + str(reg_counter) + ']')
+                    reg_counter = reg_counter + 1
+
+        sum_data = m.Reg('sum_data', sum_width, sum_counter)
+        reg_data = m.Reg('reg_data', sum_width, reg_counter)
+        reg_data_valid_pipe = m.Reg('reg_data_valid_pipe', data_pipe_counter)
+        wr_data = m.Wire('wr_data', std_comm_width)
+        wr_data_valid = m.Wire('wr_data_valid')
+        m.EmbeddedCode('//sum loops for address and data lines wires and regs - end')
+        # sum loops for address and data lines wires and regs - end ----------------------------------------------------
+
+        # configuration sector -----------------------------------------------------------------------------------------
+        m.EmbeddedCode('\n//configuration sector - begin')
         if pe_init_conf.width > std_comm_width:
             config_forward.assign(pe_end_conf[0:pe_end_conf.width - std_comm_width])
             config_output_forward.assign(pe_init_conf[0:pe_init_conf.width - std_comm_width])
@@ -83,27 +198,8 @@ class Components:
         m.EmbeddedCode('//configuration sector - end')
         # configuration sector - end -----------------------------------------------------------------------------------
 
-        # Internal loop control - begin ----------------------------------------------------------------------------------
+        # Internal loop control - begin --------------------------------------------------------------------------------
         m.EmbeddedCode('\n//Internal loop control - begin')
-        grn_input_data_valid = m.Reg('grn_input_data_valid', 2)
-        grn_input_data = m.Reg('grn_input_data', len(nodes))
-        grn_output_data_valid = m.Wire('grn_output_data_valid', 2)
-        grn_output_data = m.Wire('grn_output_data', len(nodes))
-
-        fsm_process = m.Reg('fsm_process', 5)
-        fsm_process_init = m.Localparam('fsm_process_init', 0)
-        fsm_process_loop = m.Localparam('fsm_process_loop', 1)
-        fsm_process_discharge = m.Localparam('fsm_process_discharge', 2)
-        fsm_process_verify = m.Localparam('fsm_process_verify', 3)
-        fsm_process_done = m.Localparam('fsm_process_done', 4)
-
-        b_r = m.Reg('b_r', len(nodes))
-        b_r_next = m.Reg('b_r_next', len(nodes))
-        al_r = m.Reg('al_r', len(nodes))
-        bl_r = m.Reg('bl_r', len(nodes))
-        bl_r_v = m.Reg('bl_r_v')
-        flag_first_iteration = m.Reg('flag_first_iteration')
-
         m.Always(Posedge(clk))(
             If(grn_output_data_valid[1])(
                 al_r(grn_output_data),
@@ -120,8 +216,9 @@ class Components:
             If(rst)(
                 fsm_process(fsm_process_init),
                 grn_input_data_valid(0),
+                last_loop(0),
                 done(0),
-            ).Elif(config_input_done)(
+            ).Elif(AndList(config_input_done, hm_rdy))(
                 Case(fsm_process)(
                     When(fsm_process_init)(
                         # here I initiate the a_r and ACC values
@@ -130,6 +227,7 @@ class Components:
                         b_r_next(pe_init_conf[0:b_r_next.width] + 1),
                         flag_first_iteration(1),
                         fsm_process(fsm_process_loop),
+                        hm_rd_add_selector(0),
                     ),
                     When(fsm_process_loop)(
                         # here I initiate the 1-pass GRN output for a_r
@@ -139,22 +237,84 @@ class Components:
                         grn_input_data_valid(1),
                         If(b_r_next == pe_init_conf[0:b_r_next.width])(
                             grn_input_data_valid(0),
-                            fsm_process(fsm_process_discharge),
+                            pe_init_conf(pe_init_conf[0:b_r_next.width] + 1),
+                            fsm_process(fsm_process_verify),
                         ),
                     ),
-                    When(fsm_process_discharge)(
-                        done(1),
-                    ),
                     When(fsm_process_verify)(
+                        fsm_process(fsm_process_init),
+                        If(pe_init_conf[0:b_r_next.width] == pe_end_conf[0:b_r_next.width])(
+                            last_loop(1),
+                        ).Elif(last_loop)(
+                            fsm_process(fsm_process_wait_pipeline),
+                        )
                     ),
-                    When(fsm_process_done)(
+                    When(fsm_process_wait_pipeline)(
+                        If(~wr)(
+                            fsm_process(fsm_process_discharge),
+                            hm_rd_add_selector(1),
+                            ctrl_hm_rd_add(0),
+                        )
+                    ),
+                    When(fsm_process_discharge)(
+                        output_data_sum(hm_rd_data),
+                        output_data_qty(hm_rd_qtdy),
+                        If(output_data_read)(
+                            ctrl_hm_rd_add.inc(),
+                        ),
+                        If(Uand(ctrl_hm_rd_add))(
+                            output_data_valid(0),
+                            fsm_process(fsm_process_done),
+                        ).Else(
+                            output_data_valid(1),
+                        )
+                    ),
 
+                    When(fsm_process_done)(
+                        done(1),
                     ),
                 ),
             )
         )
         m.EmbeddedCode('//Internal loop control - end')
         # Internal loop control - end ----------------------------------------------------------------------------------
+
+        # sum loop for address line sector - begin ---------------------------------------------------------------------
+        m.EmbeddedCode('\n//sum loop for address line sector - begin')
+        wr_address.assign(sum_add[sum_counter - 1])
+        wr.assign(reg_add_valid_pipe[add_pipe_counter - 1])
+        m.Always(Posedge(clk))(
+            EmbeddedNumeric(str_embedded_add)
+        )
+        str_embedded = 'reg_add_valid_pipe[0] <= xbc3_add_output_data_valid[0];\n'
+        for i in range(1, add_pipe_counter):
+            str_embedded = str_embedded + 'reg_add_valid_pipe[' + str(i) + '] <= reg_add_valid_pipe[' + str(
+                i - 1) + '];\n'
+        m.Always(Posedge(clk))(
+            EmbeddedNumeric(str_embedded)
+        )
+        m.EmbeddedCode('//sum loop for address line sector - end')
+        # sum loop for address line sector - end -----------------------------------------------------------------------
+
+        # sum loop for data line sector - begin ------------------------------------------------------------------------
+        m.EmbeddedCode('\n//sum loop for data line sector - begin')
+        wr_data.assign(sum_data[sum_counter - 1])
+        wr_data_valid.assign(reg_data_valid_pipe[data_pipe_counter - 1])
+
+        m.Always(Posedge(clk))(
+            EmbeddedNumeric(str_embedded_data)
+        )
+
+        str_embedded = 'reg_data_valid_pipe[0] <= xbc3_data_output_data_valid[0];\n'
+        for i in range(1, data_pipe_counter):
+            str_embedded = str_embedded + 'reg_data_valid_pipe[' + str(i) + '] <= reg_data_valid_pipe[' + str(
+                i - 1) + '];\n'
+
+        m.Always(Posedge(clk))(
+            EmbeddedNumeric(str_embedded)
+        )
+        m.EmbeddedCode('//sum loop for data line sector - end')
+        # sum loop for data line sector - begin ------------------------------------------------------------------------
 
         # grn module instantiation sector - begin ----------------------------------------------------------------------
         m.EmbeddedCode('\n//grn module instantiation sector - begin')
@@ -168,20 +328,13 @@ class Components:
         ]
         grn = self.create_grn_module(nodes, treated_functions)
         m.Instance(grn, grn.name, params, con)
-
         m.EmbeddedCode('//grn module instantiation sector - end')
         # grn module instantiation sector - end ------------------------------------------------------------------------
 
-        # xor bit counter instantiation sector - begin -----------------------------------------------------------------
-        m.EmbeddedCode('\n//xor bit counter instantiation sector - begin')
-        qtde_xbc3 = ceil(len(nodes) / 3)
-
-        m.EmbeddedCode('\n//first xor bit counter amount instantiation sector - begin')
+        # xor bit counters instantiation sector - begin ----------------------------------------------------------------
+        m.EmbeddedCode('\n//xor bit counters instantiation sector - begin')
         params = []
-
-        xbc3_add_output_data_valid = m.Wire('xbc3_add_output_data_valid', qtde_xbc3)
-        xbc3_add_output_data = m.Wire('xbc3_add_output_data', 2, qtde_xbc3)
-        for i in range(0, qtde_xbc3):
+        for i in range(0, qty_xbc3):
             b_init = i * 3
             b_fim = i * 3 + 3 if b_r.width >= i * 3 + 3 else b_r.width
             dif_width = i * 3 + 3 - b_r.width
@@ -198,64 +351,7 @@ class Components:
             grn = self.create_xor_bit_counter_3b()
             m.Instance(grn, grn.name + '_add_' + str(i), params, con)
 
-        m.EmbeddedCode('\n//sum loop for address line sector - begin')
-
-        output_data_units = ['xbc3_add_output_data[' + str(i) + ']' for i in range(qtde_xbc3)]
-        sum_counter = 0
-        reg_counter = 0
-        add_pipe_counter = 1
-        str_embedded = ''
-        while len(output_data_units) > 1:
-            process_items = []
-            add_pipe_counter = add_pipe_counter + 1
-            for i in range(len(output_data_units)):
-                process_items.append(output_data_units.pop())
-            while (len(process_items) > 0):
-                if (len(process_items) > 1):
-                    o_d_u1 = process_items.pop()
-                    o_d_u2 = process_items.pop()
-                    str_embedded = str_embedded + 'sum_add[' + str(
-                        sum_counter) + '] <= ' + o_d_u1 + ' + ' + o_d_u2 + ';\n'
-                    output_data_units.append('sum_add[' + str(sum_counter) + ']')
-                    sum_counter = sum_counter + 1
-                else:
-                    o_d_u = process_items.pop()
-                    str_embedded = str_embedded + 'reg_add[' + str(reg_counter) + '] <= ' + o_d_u + ';\n'
-                    output_data_units.append('reg_add[' + str(reg_counter) + ']')
-                    reg_counter = reg_counter + 1
-        str_embedded = str_embedded + 'reg_add[' + str(reg_counter) + '] <= ' + 'sum_add[' + str(sum_counter - 1) + '];'
-        sum_width = ceil(log2(len(nodes)))
-        sum_add = m.Reg('sum_add', sum_width, sum_counter)
-        reg_add = m.Reg('reg_add', sum_width, reg_counter + 1)
-        reg_add_valid_pipe = m.Reg('reg_add_valid_pipe', add_pipe_counter)
-        wr_address = m.Wire('wr_address',sum_width)
-        wr = m.Wire('wr')
-        wr_address.assign(sum_add[sum_counter-1])
-        wr.assign(reg_add_valid_pipe[add_pipe_counter - 1])
-
-        m.Always(Posedge(clk))(
-            EmbeddedNumeric(str_embedded)
-        )
-
-        str_embedded = 'reg_add_valid_pipe[0] <= xbc3_add_output_data_valid[0];\n'
-        for i in range(1, add_pipe_counter):
-            str_embedded = str_embedded + 'reg_add_valid_pipe[' + str(i) + '] <= reg_add_valid_pipe[' + str(
-                i - 1) + '];\n'
-
-        m.Always(Posedge(clk))(
-            EmbeddedNumeric(str_embedded)
-        )
-
-        m.EmbeddedCode('//sum loop for address line sector - end')
-
-        m.EmbeddedCode('//first xor bit counter amount instantiation sector - end')
-
-        m.EmbeddedCode('\n//second xor bit counter amount instantiation sector - begin')
-        params = []
-
-        xbc3_data_output_data_valid = m.Wire('xbc3_data_output_data_valid', qtde_xbc3)
-        xbc3_data_output_data = m.Wire('xbc3_data_output_data', 2, qtde_xbc3)
-        for i in range(0, qtde_xbc3):
+        for i in range(0, qty_xbc3):
             b_init = i * 3
             b_fim = i * 3 + 3 if b_r.width >= i * 3 + 3 else b_r.width
             dif_width = i * 3 + 3 - b_r.width
@@ -272,60 +368,33 @@ class Components:
             grn = self.create_xor_bit_counter_3b()
             m.Instance(grn, grn.name + '_data_' + str(i), params, con)
 
-        m.EmbeddedCode('\n//sum loop for data line sector - begin')
-        output_data_units = ['xbc3_data_output_data[' + str(i) + ']' for i in range(qtde_xbc3)]
-        sum_counter = 0
-        reg_counter = 0
-        data_pipe_counter = 0
-        str_embedded = ''
-        while len(output_data_units) > 1:
-            process_items = []
-            data_pipe_counter = data_pipe_counter + 1
-            for i in range(len(output_data_units)):
-                process_items.append(output_data_units.pop())
-            while (len(process_items) > 0):
-                if (len(process_items) > 1):
-                    o_d_u1 = process_items.pop()
-                    o_d_u2 = process_items.pop()
-                    str_embedded = str_embedded + 'sum_data[' + str(
-                        sum_counter) + '] <= ' + o_d_u1 + ' + ' + o_d_u2 + ';\n'
-                    output_data_units.append('sum_data[' + str(sum_counter) + ']')
-                    sum_counter = sum_counter + 1
-                else:
-                    o_d_u = process_items.pop()
-                    str_embedded = str_embedded + 'reg_data[' + str(reg_counter) + '] <= ' + o_d_u + ';\n'
-                    output_data_units.append('reg_data[' + str(reg_counter) + ']')
-                    reg_counter = reg_counter + 1
+        m.EmbeddedCode('//xor bit counters instantiation sector - end')
+        # xor bit counters instantiation sector - end ------------------------------------------------------------------
 
-        sum_width = ceil(log2(len(nodes)))
-        sum_data = m.Reg('sum_data', sum_width, sum_counter)
-        reg_data = m.Reg('reg_data', sum_width, reg_counter)
-        reg_data_valid_pipe = m.Reg('reg_data_valid_pipe', data_pipe_counter)
-        wr_data = m.Wire('wr_wr_data', sum_width)
-        wr_data_valid = m.Wire('wr_data_valid')
-        wr_data.assign(sum_data[sum_counter - 1])
-        wr_data_valid.assign(reg_data_valid_pipe[data_pipe_counter - 1])
+        # histogram memory sector - Begin ------------------------------------------------------------------------------
+        m.EmbeddedCode('\n//histogram memory sector - Begin')
+        hm_rd_add.assign(Mux(hm_rd_add_selector, ctrl_hm_rd_add, wr_address))
+        params = []
+        con = [
+            ('clk', clk),
+            ('rst', rst),
+            ('rd_add', hm_rd_add[0:hist_mem_bit_depth] if len(nodes) > hist_mem_bit_depth else hm_rd_add),
+            ('wr', wr),
+            ('wr_add', wr_address),
+            ('wr_data', wr_data),
+            ('rd_data', hm_rd_data),
+            ('rdy', hm_rdy)
+        ]
+        hm = self.create_histogram_memory(hist_mem_bit_depth, std_comm_width)
+        m.Instance(hm, hm.name, params, con)
+        m.EmbeddedCode('//histogram memory sector - Begin')
+        # histogram memory sector - End --------------------------------------------------------------------------------
 
-        m.Always(Posedge(clk))(
-            EmbeddedNumeric(str_embedded)
-        )
-
-        str_embedded = 'reg_data_valid_pipe[0] <= xbc3_data_output_data_valid[0];\n'
-        for i in range(1, data_pipe_counter):
-            str_embedded = str_embedded + 'reg_data_valid_pipe[' + str(i) + '] <= reg_data_valid_pipe[' + str(
-                i - 1) + '];\n'
-
-        m.Always(Posedge(clk))(
-            EmbeddedNumeric(str_embedded)
-        )
-        m.EmbeddedCode('//sum loop for data line sector - end')
-
-        m.EmbeddedCode('//second xor bit counter amount instantiation sector - end')
-
-        m.EmbeddedCode('//xor bit counter instantiation sector - end')
-        # xor bit counter instantiation sector - bed -------------------------------------------------------------------
-
+        # simulation sector - begin ------------------------------------------------------------------------------------
+        m.EmbeddedCode('\n//simulation sector - begin')
         initialize_regs(m)
+        m.EmbeddedCode('//simulation sector - begin')
+        # simulation sector - end --------------------------------------------------------------------------------------
         self.cache[name] = m
 
         return m
@@ -445,15 +514,18 @@ class Components:
         wr_add = m.Input('wr_add', bit_depth)
         wr_data = m.Input('wr_data', data_width)
         rd_data = m.Output('rd_data', data_width)
+        rd_qty = m.Output('rd_qty', data_width)
         rdy = m.OutputReg('rdy')
 
         rst_counter = m.Reg('rst_counter', bit_depth)
         flag_rst = m.Reg('flag_rst')
 
         valid = m.Reg('valid', pow(2, bit_depth))
-        mem = m.Reg('mem', data_width, pow(2, bit_depth))
+        sum_m = m.Reg('sum_m', data_width, pow(2, bit_depth))
+        qty_m = m.Reg('qty_m', data_width, pow(2, bit_depth))
 
-        rd_data.assign(Mux(valid[rd_add], mem[rd_add], 0))
+        rd_data.assign(Mux(valid[rd_add], sum_m[rd_add], 0))
+        rd_qty.assign(qty_m[rd_add])
 
         m.Always(Posedge(clk))(
             If(rst)(
@@ -466,10 +538,12 @@ class Components:
                     flag_rst(0)
                 ).Else(
                     valid[rst_counter](0),
+                    qty_m[rst_counter](0),
                     rst_counter.inc(),
                 )
             ).Elif(wr)(
-                mem[wr_add](wr_data),
+                sum_m[wr_add](wr_data + rd_data),
+                qty_m[wr_data](rd_qty + 1),
                 valid[wr_add](1)
             )
         )

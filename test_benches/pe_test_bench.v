@@ -19,39 +19,24 @@ module test_bench
   //Configuration Signals - End
 
   //Data Transfer Signals - Begin
-  reg tb_data_valid;
-  reg [32-1:0] tb_input_data;
+  reg pe_output_data_read;
   wire pe_output_data_valid;
-  wire [32-1:0] pe_output_data;
+  wire [32-1:0] pe_output_data_sum;
+  wire [32-1:0] pe_output_data_qty;
   //Data Transfer Signals - End
   wire pe_done;
 
-  pe
-  pe
-  (
-    .clk(tb_clk),
-    .rst(tb_rst),
-    .config_input_done(tb_config_input_done),
-    .config_input_valid(pe_config_input_valid),
-    .config_input(pe_config_input),
-    .config_output(pe_config_output),
-    .input_data_valid(tb_data_valid),
-    .input_data(tb_input_data),
-    .output_data_valid(pe_output_data_valid),
-    .output_data(pe_output_data),
-    .done(pe_done)
-  );
 
+  reg [2-1:0] config_counter;
+  wire [32-1:0] config_rom [0:2-1];
 
   //Configuraton Memory section - Begin
-  wire [32-1:0] config_rom [0:2-1];
-  assign config_rom[0] = 1;
-  assign config_rom[1] = 5;
+  assign config_rom[0] = 0;
+  assign config_rom[1] = 31;
 
   //Configuraton Memory section - End
 
   //PE test Control - Begin
-  reg [2-1:0] config_counter;
 
   always @(posedge tb_clk) begin
     if(tb_rst) begin
@@ -70,7 +55,36 @@ module test_bench
   end
 
 
+  always @(posedge tb_clk) begin
+    if(tb_rst) begin
+      pe_output_data_read <= 0;
+    end else begin
+      pe_output_data_read <= 0;
+      if(pe_output_data_valid) begin
+        pe_output_data_read <= 1;
+      end 
+    end
+  end
+
+
   //PE test Control - End
+
+  pe
+  pe
+  (
+    .clk(tb_clk),
+    .rst(tb_rst),
+    .config_input_done(tb_config_input_done),
+    .config_input_valid(pe_config_input_valid),
+    .config_input(pe_config_input),
+    .config_output(pe_config_output),
+    .output_data_read(pe_output_data_read),
+    .output_data_valid(pe_output_data_valid),
+    .output_data_sum(pe_output_data_sum),
+    .output_data_qty(pe_output_data_qty),
+    .done(pe_done)
+  );
+
 
   //Simulation sector - Begin
 
@@ -80,8 +94,7 @@ module test_bench
     tb_config_input_done = 0;
     pe_config_input_valid = 0;
     pe_config_input = 0;
-    tb_data_valid = 0;
-    tb_input_data = 0;
+    pe_output_data_read = 0;
     config_counter = 0;
   end
 
@@ -97,8 +110,6 @@ module test_bench
     @(posedge tb_clk);
     @(posedge tb_clk);
     tb_rst = 0;
-    #10000;
-    $finish;
   end
 
   always #5tb_clk=~tb_clk;
@@ -124,19 +135,75 @@ module pe
   input config_input_valid,
   input [32-1:0] config_input,
   output reg [32-1:0] config_output,
-  input input_data_valid,
-  input [32-1:0] input_data,
-  input output_data_valid,
-  input [32-1:0] output_data,
+  input output_data_read,
+  output reg output_data_valid,
+  output reg [32-1:0] output_data_sum,
+  output reg [32-1:0] output_data_qty,
   output reg done
 );
 
 
-  //configuration sector - begin
+  //configuration wires and regs - begin
   reg [32-1:0] pe_init_conf;
   reg [32-1:0] pe_end_conf;
   wire [32-1:0] config_forward;
   wire [32-1:0] config_output_forward;
+  //configuration wires and regs - end
+
+  //grn instantiation module wires and regs - begin
+  reg [2-1:0] grn_input_data_valid;
+  reg [5-1:0] grn_input_data;
+  wire [2-1:0] grn_output_data_valid;
+  wire [5-1:0] grn_output_data;
+  //grn instantiation module wires and regs - end
+
+  //Internal loop control wires and regs - begin
+  reg last_loop;
+  reg [5-1:0] ctrl_hm_rd_add;
+  reg [5-1:0] b_r;
+  reg [5-1:0] b_r_next;
+  reg [5-1:0] al_r;
+  reg [5-1:0] bl_r;
+  reg bl_r_v;
+  reg flag_first_iteration;
+  reg [5-1:0] fsm_process;
+  localparam fsm_process_init = 0;
+  localparam fsm_process_loop = 1;
+  localparam fsm_process_wait_pipeline = 2;
+  localparam fsm_process_discharge = 3;
+  localparam fsm_process_verify = 4;
+  localparam fsm_process_done = 5;
+  //Internal loop control wires and regs - end
+
+  //xor bit counters instantiation wires and regs - begin
+  wire [2-1:0] xbc3_add_output_data_valid;
+  wire [2-1:0] xbc3_add_output_data [0:2-1];
+  wire [2-1:0] xbc3_data_output_data_valid;
+  wire [2-1:0] xbc3_data_output_data [0:2-1];
+  //xor bit counters instantiation wires and regs - end
+
+  //Histogram memory instantiation wires and regs - begin
+  wire [32-1:0] hm_rd_data;
+  wire [32-1:0] hm_rd_qtdy;
+  wire hm_rdy;
+  wire [5-1:0] hm_rd_add;
+  reg hm_rd_add_selector;
+  //Histogram memory instantiation wires and regs - end
+
+  //sum loops for address and data lines wires and regs - begin
+  reg [5-1:0] sum_add [0:1-1];
+  reg [5-1:0] reg_add [0:1-1];
+  reg [2-1:0] reg_add_valid_pipe;
+  wire [5-1:0] wr_address;
+  wire wr;
+  reg [5-1:0] sum_data [0:1-1];
+  reg [5-1:0] reg_data [0:0-1];
+  reg [1-1:0] reg_data_valid_pipe;
+  wire [32-1:0] wr_data;
+  wire wr_data_valid;
+  //sum loops for address and data lines wires and regs - end
+
+  //configuration sector - begin
   assign config_forward = pe_end_conf;
   assign config_output_forward = pe_init_conf;
 
@@ -151,22 +218,6 @@ module pe
   //configuration sector - end
 
   //Internal loop control - begin
-  reg [2-1:0] grn_input_data_valid;
-  reg [5-1:0] grn_input_data;
-  wire [2-1:0] grn_output_data_valid;
-  wire [5-1:0] grn_output_data;
-  reg [5-1:0] fsm_process;
-  localparam fsm_process_init = 0;
-  localparam fsm_process_loop = 1;
-  localparam fsm_process_discharge = 2;
-  localparam fsm_process_verify = 3;
-  localparam fsm_process_done = 4;
-  reg [5-1:0] b_r;
-  reg [5-1:0] b_r_next;
-  reg [5-1:0] al_r;
-  reg [5-1:0] bl_r;
-  reg bl_r_v;
-  reg flag_first_iteration;
 
   always @(posedge clk) begin
     if(grn_output_data_valid[1]) begin
@@ -185,9 +236,10 @@ module pe
     if(rst) begin
       fsm_process <= fsm_process_init;
       grn_input_data_valid <= 0;
+      last_loop <= 0;
       done <= 0;
     end else begin
-      if(config_input_done) begin
+      if(config_input_done && hm_rdy) begin
         case(fsm_process)
           fsm_process_init: begin
             b_r <= pe_init_conf[4:0];
@@ -195,6 +247,7 @@ module pe
             b_r_next <= pe_init_conf[4:0] + 1;
             flag_first_iteration <= 1;
             fsm_process <= fsm_process_loop;
+            hm_rd_add_selector <= 0;
           end
           fsm_process_loop: begin
             grn_input_data <= b_r;
@@ -203,15 +256,40 @@ module pe
             grn_input_data_valid <= 1;
             if(b_r_next == pe_init_conf[4:0]) begin
               grn_input_data_valid <= 0;
+              pe_init_conf <= pe_init_conf[4:0] + 1;
+              fsm_process <= fsm_process_verify;
+            end 
+          end
+          fsm_process_verify: begin
+            fsm_process <= fsm_process_init;
+            if(pe_init_conf[4:0] == pe_end_conf[4:0]) begin
+              last_loop <= 1;
+            end else if(last_loop) begin
+              fsm_process <= fsm_process_wait_pipeline;
+            end 
+          end
+          fsm_process_wait_pipeline: begin
+            if(~wr) begin
               fsm_process <= fsm_process_discharge;
+              hm_rd_add_selector <= 1;
+              ctrl_hm_rd_add <= 0;
             end 
           end
           fsm_process_discharge: begin
-            done <= 1;
-          end
-          fsm_process_verify: begin
+            output_data_sum <= hm_rd_data;
+            output_data_qty <= hm_rd_qtdy;
+            if(output_data_read) begin
+              ctrl_hm_rd_add <= ctrl_hm_rd_add + 1;
+            end 
+            if(&ctrl_hm_rd_add) begin
+              output_data_valid <= 0;
+              fsm_process <= fsm_process_done;
+            end else begin
+              output_data_valid <= 1;
+            end
           end
           fsm_process_done: begin
+            done <= 1;
           end
         endcase
       end 
@@ -219,6 +297,41 @@ module pe
   end
 
   //Internal loop control - end
+
+  //sum loop for address line sector - begin
+  assign wr_address = sum_add[0];
+  assign wr = reg_add_valid_pipe[1];
+
+  always @(posedge clk) begin
+    sum_add[0] <= xbc3_add_output_data[0] + xbc3_add_output_data[1];
+    reg_add[0] <= sum_add[0];
+  end
+
+
+  always @(posedge clk) begin
+    reg_add_valid_pipe[0] <= xbc3_add_output_data_valid[0];
+    reg_add_valid_pipe[1] <= reg_add_valid_pipe[0];
+
+  end
+
+  //sum loop for address line sector - end
+
+  //sum loop for data line sector - begin
+  assign wr_data = sum_data[0];
+  assign wr_data_valid = reg_data_valid_pipe[0];
+
+  always @(posedge clk) begin
+    sum_data[0] <= xbc3_data_output_data[0] + xbc3_data_output_data[1];
+
+  end
+
+
+  always @(posedge clk) begin
+    reg_data_valid_pipe[0] <= xbc3_data_output_data_valid[0];
+
+  end
+
+  //sum loop for data line sector - end
 
   //grn module instantiation sector - begin
 
@@ -234,11 +347,7 @@ module pe
 
   //grn module instantiation sector - end
 
-  //xor bit counter instantiation sector - begin
-
-  //first xor bit counter amount instantiation sector - begin
-  wire [2-1:0] xbc3_add_output_data_valid;
-  wire [2-1:0] xbc3_add_output_data [0:2-1];
+  //xor bit counters instantiation sector - begin
 
   xor_bit_counter_3b
   xor_bit_counter_3b_add_0
@@ -262,34 +371,6 @@ module pe
   );
 
 
-  //sum loop for address line sector - begin
-  reg [3-1:0] sum_add [0:1-1];
-  reg [3-1:0] reg_add [0:1-1];
-  reg [2-1:0] reg_add_valid_pipe;
-  wire [3-1:0] wr_address;
-  wire wr;
-  assign wr_address = sum_add[0];
-  assign wr = reg_add_valid_pipe[1];
-
-  always @(posedge clk) begin
-    sum_add[0] <= xbc3_add_output_data[0] + xbc3_add_output_data[1];
-    reg_add[0] <= sum_add[0];
-  end
-
-
-  always @(posedge clk) begin
-    reg_add_valid_pipe[0] <= xbc3_add_output_data_valid[0];
-    reg_add_valid_pipe[1] <= reg_add_valid_pipe[0];
-
-  end
-
-  //sum loop for address line sector - end
-  //first xor bit counter amount instantiation sector - end
-
-  //second xor bit counter amount instantiation sector - begin
-  wire [2-1:0] xbc3_data_output_data_valid;
-  wire [2-1:0] xbc3_data_output_data [0:2-1];
-
   xor_bit_counter_3b
   xor_bit_counter_3b_data_0
   (
@@ -311,46 +392,49 @@ module pe
     .output_data(xbc3_data_output_data[1])
   );
 
+  //xor bit counters instantiation sector - end
 
-  //sum loop for data line sector - begin
-  reg [3-1:0] sum_data [0:1-1];
-  reg [3-1:0] reg_data [0:0-1];
-  reg [1-1:0] reg_data_valid_pipe;
-  wire [3-1:0] wr_wr_data;
-  wire wr_data_valid;
-  assign wr_wr_data = sum_data[0];
-  assign wr_data_valid = reg_data_valid_pipe[0];
+  //histogram memory sector - Begin
+  assign hm_rd_add = (hm_rd_add_selector)? ctrl_hm_rd_add : wr_address;
 
-  always @(posedge clk) begin
-    sum_data[0] <= xbc3_data_output_data[0] + xbc3_data_output_data[1];
+  histogram_memory
+  histogram_memory
+  (
+    .clk(clk),
+    .rst(rst),
+    .rd_add(hm_rd_add),
+    .wr(wr),
+    .wr_add(wr_address),
+    .wr_data(wr_data),
+    .rd_data(hm_rd_data),
+    .rdy(hm_rdy)
+  );
 
-  end
+  //histogram memory sector - Begin
 
-
-  always @(posedge clk) begin
-    reg_data_valid_pipe[0] <= xbc3_data_output_data_valid[0];
-
-  end
-
-  //sum loop for data line sector - end
-  //second xor bit counter amount instantiation sector - end
-  //xor bit counter instantiation sector - end
+  //simulation sector - begin
   integer i_initial;
 
   initial begin
     config_output = 0;
+    output_data_valid = 0;
+    output_data_sum = 0;
+    output_data_qty = 0;
     done = 0;
     pe_init_conf = 0;
     pe_end_conf = 0;
     grn_input_data_valid = 0;
     grn_input_data = 0;
-    fsm_process = 0;
+    last_loop = 0;
+    ctrl_hm_rd_add = 0;
     b_r = 0;
     b_r_next = 0;
     al_r = 0;
     bl_r = 0;
     bl_r_v = 0;
     flag_first_iteration = 0;
+    fsm_process = 0;
+    hm_rd_add_selector = 0;
     for(i_initial=0; i_initial<1; i_initial=i_initial+1) begin
       sum_add[i_initial] = 0;
     end
@@ -367,6 +451,7 @@ module pe
     reg_data_valid_pipe = 0;
   end
 
+  //simulation sector - begin
 
 endmodule
 
@@ -510,6 +595,72 @@ module xor_bit_counter_3b
   initial begin
     output_data_valid = 0;
     output_data = 0;
+  end
+
+
+endmodule
+
+
+
+module histogram_memory
+(
+  input clk,
+  input rst,
+  input [5-1:0] rd_add,
+  input wr,
+  input [5-1:0] wr_add,
+  input [32-1:0] wr_data,
+  output [32-1:0] rd_data,
+  output [32-1:0] rd_qty,
+  output reg rdy
+);
+
+  reg [5-1:0] rst_counter;
+  reg flag_rst;
+  reg [32-1:0] valid;
+  reg [32-1:0] sum_m [0:32-1];
+  reg [32-1:0] qty_m [0:32-1];
+  assign rd_data = (valid[rd_add])? sum_m[rd_add] : 0;
+  assign rd_qty = qty_m[rd_add];
+
+  always @(posedge clk) begin
+    if(rst) begin
+      rdy <= 0;
+      flag_rst <= 1;
+      rst_counter <= 0;
+    end else begin
+      if(flag_rst) begin
+        if(&rst_counter) begin
+          rdy <= 1;
+          flag_rst <= 0;
+        end else begin
+          valid[rst_counter] <= 0;
+          qty_m[rst_counter] <= 0;
+          rst_counter <= rst_counter + 1;
+        end
+      end else begin
+        if(wr) begin
+          sum_m[wr_add] <= wr_data + rd_data;
+          qty_m[wr_data] <= rd_qty + 1;
+          valid[wr_add] <= 1;
+        end 
+      end
+    end
+  end
+
+  integer i_initial;
+
+  initial begin
+    rdy = 0;
+    rst_counter = 0;
+    flag_rst = 0;
+    valid = 0;
+    for(i_initial=0; i_initial<32; i_initial=i_initial+1) begin
+      sum_m[i_initial] = 0;
+    end
+    for(i_initial=0; i_initial<32; i_initial=i_initial+1) begin
+      qty_m[i_initial] = 0;
+    end
   end
 
 
