@@ -62,6 +62,7 @@ module test_bench
       pe_output_data_read <= 0;
       if(pe_output_data_valid) begin
         pe_output_data_read <= 1;
+        $display("Pos -: sum %d qty %d", pe_output_data_sum, pe_output_data_qty);
       end 
     end
   end

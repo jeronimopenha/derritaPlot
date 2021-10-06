@@ -1,3 +1,6 @@
+from builtins import len
+
+from apt_pkg import init
 from veriloggen import *
 from src.Components import Components
 from src.utils import initialize_regs, treat_functions, readGRN
@@ -83,7 +86,8 @@ class TestBenches:
             ).Else(
                 pe_output_data_read(0),
                 If(pe_output_data_valid)(
-                    pe_output_data_read(1)
+                    pe_output_data_read(1),
+                    Display('Pos -: sum %d qty %d' , pe_output_data_sum, pe_output_data_qty)
                 )
             )
         )
@@ -131,34 +135,76 @@ class TestBenches:
         tb.to_verilog("../test_benches/pe_test_bench.v")
         sim = simulation.Simulator(tb, sim='iverilog')
         rslt = sim.run()
+        print(rslt)
 
     def create_pe_test_bench_cpu(self, benchmark, init_state=0, end_state=31):
 
         functions = sorted(readGRN(benchmark))
         nodes, treated_functions = treat_functions(functions)
-        nodes_b = {}
-        for node in nodes:
-            nodes_b[node] = False
+
+
+        sum = [0 for i in range(int(pow(2, len(nodes))))]
+        qty = [0 for i in range(int(pow(2, len(nodes))))]
+
+        nodes_a = {node: False for node in nodes}
+        nodes_b = {node: False for node in nodes}
+        nodes_al = {node: False for node in nodes}
+        nodes_bl = {node: False for node in nodes}
+
+        functions_a = [function for function in functions]
+        for i in range(len(functions_a)):
+            for node in nodes:
+                functions_a[i] = functions_a[i].strip().replace(node, 'nodes_a["' + node + '"]')
+            aux = functions_a[i].split('=')
+            functions_a[i] = aux[0].replace('nodes_a', 'nodes_al') + ' = ' + aux[1]
+
+        functions_b = [function for function in functions]
+        for i in range(len(functions_b)):
+            for node in nodes:
+                functions_b[i] = functions_b[i].strip().replace(node, 'nodes_b["' + node + '"]')
+            aux = functions_b[i].split('=')
+            functions_b[i] = aux[0].replace('nodes_b', 'nodes_bl') + ' = ' + aux[1]
 
         while init_state <= end_state:
-            counter = init_state + 1
-            init_state_b = init_state
-            for node in nodes_b:
-                nodes_b[node] = True if (init_state_b & 0x1 == 1) else False
-                init_state_b = init_state_b >> 1
+            counter = init_state + 1 if init_state + 1 <= end_state else 0
+            init_state_a = init_state
 
-            for i in range(len(functions)):
-                for node in nodes:
-                    functions[i] = functions[i].strip().replace(node, 'nodes_b["' + node + '"]')
+            for node in nodes_a:
+                nodes_a[node] = True if (init_state_a & 0x1 == 1) else False
+                init_state_a = init_state_a >> 1
 
-            for f in functions:
-                exec(f)
+            for f in functions_a:
+                exec(f, globals(), locals())
+
+            while counter != init_state:
+                init_state_b = counter
+                for node in nodes_b:
+                    nodes_b[node] = True if (init_state_b & 0x1 == 1) else False
+                    init_state_b = init_state_b >> 1
+
+                for f in functions_b:
+                    exec(f)
+
+                diff_a_b = 0
+                diff_al_bl = 0
+
+                for node in nodes_a:
+                    diff_a_b = diff_a_b + 1 if nodes_a[node] != nodes_b[node] else diff_a_b
+                    diff_al_bl = diff_al_bl + 1 if nodes_al[node] != nodes_bl[node] else diff_al_bl
+                sum[diff_a_b] = sum[diff_a_b] + diff_al_bl
+                qty[diff_a_b] = qty[diff_a_b] + 1
+                counter = counter + 1 if counter + 1 <= end_state else 0
+            init_state = init_state + 1
+
+        print('PE_ test_bench_results_CPU')
+        for i in range(len(sum)):
+            print('Pos '+str(i)+': sum '+str(sum[i])+' qty '+str(qty[i]))
 
 
 test_benches = TestBenches()
+test_benches.create_pe_test_bench_hw('../Benchmarks/Benchmark_5.txt', 5)
 test_benches.create_pe_test_bench_cpu('../Benchmarks/Benchmark_5.txt')
 # test_benches.create_pe_test_bench('../Benchmarks/B_bronchiseptica.txt',10)
-# test_benches.create_pe_test_bench_hw('../Benchmarks/Benchmark_5.txt', 5)
 # test_benches.create_histogram_memory_test_bench()
 # test_benches.create_grn_test_bench('../Benchmarks/Benchmark_5.txt')
 # test_benches.create_xor_bit_counter_3b_test_bench()
