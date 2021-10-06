@@ -54,14 +54,19 @@ module test_bench
     end
   end
 
+  reg rd_flag;
+  reg [1-1:0] fsm_rd_data;
+  localparam fsm_rd_data_idle = 0;
+  localparam fsm_rd_data_read = 1;
 
   always @(posedge tb_clk) begin
     if(tb_rst) begin
       pe_output_data_read <= 0;
+      fsm_rd_data <= fsm_rd_data_idle;
+      rd_flag <= 0;
     end else begin
-      pe_output_data_read <= 0;
+      pe_output_data_read <= 1;
       if(pe_output_data_valid) begin
-        pe_output_data_read <= 1;
         $display("Pos -: sum %d qty %d", pe_output_data_sum, pe_output_data_qty);
       end 
     end
@@ -97,6 +102,8 @@ module test_bench
     pe_config_input = 0;
     pe_output_data_read = 0;
     config_counter = 0;
+    rd_flag = 0;
+    fsm_rd_data = 0;
   end
 
 
@@ -185,7 +192,7 @@ module pe
 
   //Histogram memory instantiation wires and regs - begin
   wire [32-1:0] hm_rd_data;
-  wire [32-1:0] hm_rd_qtdy;
+  wire [32-1:0] hm_rd_qty;
   wire hm_rdy;
   wire [5-1:0] hm_rd_add;
   reg hm_rd_add_selector;
@@ -277,17 +284,16 @@ module pe
             end 
           end
           fsm_process_discharge: begin
-            output_data_sum <= hm_rd_data;
-            output_data_qty <= hm_rd_qtdy;
-            if(output_data_read) begin
-              ctrl_hm_rd_add <= ctrl_hm_rd_add + 1;
-            end 
+            output_data_valid <= 0;
             if(&ctrl_hm_rd_add) begin
               output_data_valid <= 0;
               fsm_process <= fsm_process_done;
-            end else begin
+            end else if(output_data_read) begin
+              ctrl_hm_rd_add <= ctrl_hm_rd_add + 1;
               output_data_valid <= 1;
-            end
+              output_data_sum <= hm_rd_data;
+              output_data_qty <= hm_rd_qty;
+            end 
           end
           fsm_process_done: begin
             done <= 1;
@@ -300,7 +306,7 @@ module pe
   //Internal loop control - end
 
   //sum loop for address line sector - begin
-  assign wr_address = sum_add[0];
+  assign wr_address = reg_add[0];
   assign wr = reg_add_valid_pipe[1];
 
   always @(posedge clk) begin
@@ -408,6 +414,7 @@ module pe
     .wr_add(wr_address),
     .wr_data(wr_data),
     .rd_data(hm_rd_data),
+    .rd_qty(hm_rd_qty),
     .rdy(hm_rdy)
   );
 
@@ -621,8 +628,12 @@ module histogram_memory
   reg [32-1:0] valid;
   reg [32-1:0] sum_m [0:32-1];
   reg [32-1:0] qty_m [0:32-1];
+  wire [32-1:0] wr_sum;
+  wire [32-1:0] wr_qty;
   assign rd_data = (valid[rd_add])? sum_m[rd_add] : 0;
-  assign rd_qty = qty_m[rd_add];
+  assign rd_qty = (valid[rd_add])? qty_m[rd_add] : 0;
+  assign wr_sum = wr_data + rd_data;
+  assign wr_qty = rd_qty + 1;
 
   always @(posedge clk) begin
     if(rst) begin
@@ -641,8 +652,8 @@ module histogram_memory
         end
       end else begin
         if(wr) begin
-          sum_m[wr_add] <= wr_data + rd_data;
-          qty_m[wr_data] <= rd_qty + 1;
+          sum_m[wr_add] <= wr_sum;
+          qty_m[wr_add] <= wr_qty;
           valid[wr_add] <= 1;
         end 
       end

@@ -19,7 +19,6 @@ class TestBenches:
     def create_pe_test_bench_hw(self, benchmark, hist_mem_bit_depth, init_state=0, end_state=31):
         functions = sorted(readGRN(benchmark))
         nodes, treated_functions = treat_functions(functions)
-        id_width = 32
         std_comm_width = 32
 
         # TEST BENCH MODULE --------------------------------------------------------------------------------------------
@@ -80,15 +79,21 @@ class TestBenches:
             )
         )
 
+        rd_flag = tb.Reg('rd_flag')
+        fsm_rd_data = tb.Reg('fsm_rd_data', 1)
+        fsm_rd_data_idle = tb.Localparam('fsm_rd_data_idle', 0)
+        fsm_rd_data_read = tb.Localparam('fsm_rd_data_read', 1)
+
         tb.Always(Posedge(tb_clk))(
             If(tb_rst)(
-                pe_output_data_read(0)
-            ).Else(
                 pe_output_data_read(0),
+                fsm_rd_data(fsm_rd_data_idle),
+                rd_flag(0)
+            ).Else(
+                pe_output_data_read(1),
                 If(pe_output_data_valid)(
-                    pe_output_data_read(1),
-                    Display('Pos -: sum %d qty %d' , pe_output_data_sum, pe_output_data_qty)
-                )
+                    Display('Pos -: sum %d qty %d', pe_output_data_sum, pe_output_data_qty)
+                ),
             )
         )
         tb.EmbeddedCode('\n//PE test Control - End')
@@ -141,7 +146,6 @@ class TestBenches:
 
         functions = sorted(readGRN(benchmark))
         nodes, treated_functions = treat_functions(functions)
-
 
         sum = [0 for i in range(int(pow(2, len(nodes))))]
         qty = [0 for i in range(int(pow(2, len(nodes))))]
@@ -198,7 +202,7 @@ class TestBenches:
 
         print('PE_ test_bench_results_CPU')
         for i in range(len(sum)):
-            print('Pos '+str(i)+': sum '+str(sum[i])+' qty '+str(qty[i]))
+            print('Pos ' + str(i) + ': sum ' + str(sum[i]) + ' qty ' + str(qty[i]))
 
 
 test_benches = TestBenches()

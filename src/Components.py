@@ -103,7 +103,7 @@ class Components:
         # Histogram memory instantiation wires and regs - begin --------------------------------------------------------
         m.EmbeddedCode('\n//Histogram memory instantiation wires and regs - begin')
         hm_rd_data = m.Wire('hm_rd_data', std_comm_width)
-        hm_rd_qtdy = m.Wire('hm_rd_qtdy', std_comm_width)
+        hm_rd_qty = m.Wire('hm_rd_qty', std_comm_width)
         hm_rdy = m.Wire('hm_rdy')
         hm_rd_add = m.Wire('hm_rd_add', hist_mem_bit_depth)
         hm_rd_add_selector = m.Reg('hm_rd_add_selector')
@@ -114,7 +114,7 @@ class Components:
         m.EmbeddedCode('\n//sum loops for address and data lines wires and regs - begin')
         xbc3_output_buses = ['xbc3_add_output_data[' + str(i) + ']' for i in range(qty_xbc3)]
         sum_counter = 0
-        reg_counter = 0
+        reg_counter_add = 0
         add_pipe_counter = 1
         str_embedded_add = ''
         sum_width = len(nodes)
@@ -133,20 +133,21 @@ class Components:
                     sum_counter = sum_counter + 1
                 else:
                     o_d_u = process_items.pop()
-                    str_embedded_add = str_embedded_add + 'reg_add[' + str(reg_counter) + '] <= ' + o_d_u + ';\n'
-                    xbc3_output_buses.append('reg_add[' + str(reg_counter) + ']')
-                    reg_counter = reg_counter + 1
-        str_embedded_add = str_embedded_add + 'reg_add[' + str(reg_counter) + '] <= ' + 'sum_add[' + str(
+                    str_embedded_add = str_embedded_add + 'reg_add[' + str(reg_counter_add) + '] <= ' + o_d_u + ';\n'
+                    xbc3_output_buses.append('reg_add[' + str(reg_counter_add) + ']')
+                    reg_counter_add = reg_counter_add + 1
+        str_embedded_add = str_embedded_add + 'reg_add[' + str(reg_counter_add) + '] <= ' + 'sum_add[' + str(
             sum_counter - 1) + '];'
         sum_add = m.Reg('sum_add', sum_width, sum_counter)
-        reg_add = m.Reg('reg_add', sum_width, reg_counter + 1)
+        reg_counter_add = reg_counter_add + 1
+        reg_add = m.Reg('reg_add', sum_width, reg_counter_add)
         reg_add_valid_pipe = m.Reg('reg_add_valid_pipe', add_pipe_counter)
         wr_address = m.Wire('wr_address', hist_mem_bit_depth)
         wr = m.Wire('wr')
 
         xbc3_output_buses = ['xbc3_data_output_data[' + str(i) + ']' for i in range(qty_xbc3)]
         sum_counter = 0
-        reg_counter = 0
+        reg_counter_data = 0
         data_pipe_counter = 0
         str_embedded_data = ''
         while len(xbc3_output_buses) > 1:
@@ -164,12 +165,13 @@ class Components:
                     sum_counter = sum_counter + 1
                 else:
                     o_d_u = process_items.pop()
-                    str_embedded_data = str_embedded_data + 'reg_data[' + str(reg_counter) + '] <= ' + o_d_u + ';\n'
-                    xbc3_output_buses.append('reg_data[' + str(reg_counter) + ']')
-                    reg_counter = reg_counter + 1
+                    str_embedded_data = str_embedded_data + 'reg_data[' + str(
+                        reg_counter_data) + '] <= ' + o_d_u + ';\n'
+                    xbc3_output_buses.append('reg_data[' + str(reg_counter_data) + ']')
+                    reg_counter_data = reg_counter_data + 1
 
         sum_data = m.Reg('sum_data', sum_width, sum_counter)
-        reg_data = m.Reg('reg_data', sum_width, reg_counter)
+        reg_data = m.Reg('reg_data', sum_width, reg_counter_data)
         reg_data_valid_pipe = m.Reg('reg_data_valid_pipe', data_pipe_counter)
         wr_data = m.Wire('wr_data', std_comm_width)
         wr_data_valid = m.Wire('wr_data_valid')
@@ -257,19 +259,19 @@ class Components:
                         )
                     ),
                     When(fsm_process_discharge)(
-                        output_data_sum(hm_rd_data),
-                        output_data_qty(hm_rd_qtdy),
-                        If(output_data_read)(
-                            ctrl_hm_rd_add.inc(),
-                        ),
+                        output_data_valid(0),
                         If(Uand(ctrl_hm_rd_add))(
                             output_data_valid(0),
                             fsm_process(fsm_process_done),
                         ).Else(
-                            output_data_valid(1),
+                            If(output_data_read)(
+                                ctrl_hm_rd_add.inc(),
+                                output_data_valid(1),
+                                output_data_sum(hm_rd_data),
+                                output_data_qty(hm_rd_qty),
+                            ),
                         )
                     ),
-
                     When(fsm_process_done)(
                         done(1),
                     ),
@@ -281,7 +283,7 @@ class Components:
 
         # sum loop for address line sector - begin ---------------------------------------------------------------------
         m.EmbeddedCode('\n//sum loop for address line sector - begin')
-        wr_address.assign(sum_add[sum_counter - 1])
+        wr_address.assign(reg_add[reg_counter_add - 1])
         wr.assign(reg_add_valid_pipe[add_pipe_counter - 1])
         m.Always(Posedge(clk))(
             EmbeddedNumeric(str_embedded_add)
@@ -383,6 +385,7 @@ class Components:
             ('wr_add', wr_address),
             ('wr_data', wr_data),
             ('rd_data', hm_rd_data),
+            ('rd_qty', hm_rd_qty),
             ('rdy', hm_rdy)
         ]
         hm = self.create_histogram_memory(hist_mem_bit_depth, std_comm_width)
@@ -428,7 +431,14 @@ class Components:
 
         m.Always(Posedge(clk))(
             output_data_valid(input_data_valid),
-            EmbeddedNumeric(tf)
+            EmbeddedNumeric(tf),
+            # FOR DEBUG
+            # If(Uor(input_data_valid))(
+            #    Display('In_d_v %d In_d %b', input_data_valid, input_data),
+            # ),
+            # If(Uor(output_data_valid))(
+            #    Display('O_d_v  %d O_d  %b', output_data_valid, output_data),
+            # ),
         )
 
         counter = 0
@@ -523,9 +533,14 @@ class Components:
         valid = m.Reg('valid', pow(2, bit_depth))
         sum_m = m.Reg('sum_m', data_width, pow(2, bit_depth))
         qty_m = m.Reg('qty_m', data_width, pow(2, bit_depth))
+        wr_sum = m.Wire('wr_sum', data_width)
+        wr_qty = m.Wire('wr_qty', data_width)
 
         rd_data.assign(Mux(valid[rd_add], sum_m[rd_add], 0))
-        rd_qty.assign(qty_m[rd_add])
+        rd_qty.assign(Mux(valid[rd_add], qty_m[rd_add], 0))
+
+        wr_sum.assign(wr_data + rd_data)
+        wr_qty.assign(rd_qty + 1)
 
         m.Always(Posedge(clk))(
             If(rst)(
@@ -542,9 +557,11 @@ class Components:
                     rst_counter.inc(),
                 )
             ).Elif(wr)(
-                sum_m[wr_add](wr_data + rd_data),
-                qty_m[wr_data](rd_qty + 1),
-                valid[wr_add](1)
+                sum_m[wr_add](wr_sum),
+                qty_m[wr_add](wr_qty),
+                valid[wr_add](1),
+                # FOR DEBUG
+                # Display('ADD %d D %d',wr_add, wr_data)
             )
         )
 
