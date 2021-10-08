@@ -1,3 +1,123 @@
+    def create_pe_test_bench_hw(self, nodes, treated_functions, hist_mem_bit_depth, qty_pe=1, init_state=0, end_state=31,
+                                std_comm_width=32):
+        # TEST BENCH MODULE --------------------------------------------------------------------------------------------
+        tb = Module('test_bench')
+
+        tb.EmbeddedCode('\n//Standar I/O signals - Begin')
+        tb_clk = tb.Reg('tb_clk')
+        tb_rst = tb.Reg('tb_rst')
+        tb.EmbeddedCode('//Standar I/O signals - End')
+
+        tb.EmbeddedCode('\n//Configuration Signals - Begin')
+        tb_config_input_done = tb.Reg('tb_config_input_done')
+        pe_config_input = tb.Reg('pe_config_input', std_comm_width)
+        pe_config_output = tb.Wire('pe_config_output', std_comm_width)
+        tb.EmbeddedCode('//Configuration Signals - End')
+
+        tb.EmbeddedCode('\n//Data Transfer Signals - Begin')
+        pe_output_data_read = tb.Reg('pe_output_data_read')
+        pe_output_data_valid = tb.Wire('pe_output_data_valid')
+        pe_output_data_sum = tb.Wire('pe_output_data_sum', std_comm_width)
+        pe_output_data_qty = tb.Wire('pe_output_data_qty', std_comm_width)
+        tb.EmbeddedCode('//Data Transfer Signals - End')
+
+        pe_done = tb.Wire('pe_done')
+
+        tb.EmbeddedCode('\n')
+        bits_grn = len(nodes)
+        qty_conf = ceil(bits_grn / std_comm_width) * 2
+        config_counter = tb.Reg('config_counter', ceil(log2(qty_conf)) + 1)
+        config_rom = tb.Wire('config_rom', std_comm_width, qty_conf)
+
+        tb.EmbeddedCode('\n//Configuraton Memory section - Begin')
+
+        for i in range(qty_conf):
+            if i < qty_conf / 3:
+                config_rom[i].assign(init_state & 0xffff)
+                init_state = init_state >> std_comm_width
+            elif i < qty_conf / 3 * 2:
+                config_rom[i].assign(end_state & 0xffff)
+                end_state = end_state >> std_comm_width
+            else:
+                pass
+        tb.EmbeddedCode('\n//Configuraton Memory section - End')
+
+        tb.EmbeddedCode('\n//PE test Control - Begin')
+        tb.Always(Posedge(tb_clk))(
+            If(tb_rst)(
+                config_counter(0),
+                tb_config_input_done(0),
+            ).Else(
+                If(config_counter == qty_conf)(
+                    tb_config_input_done(1),
+                ).Else(
+                    config_counter.inc(),
+                    pe_config_input(config_rom[config_counter])
+                )
+            )
+        )
+
+        rd_flag = tb.Reg('rd_flag')
+        fsm_rd_data = tb.Reg('fsm_rd_data', 1)
+        fsm_rd_data_idle = tb.Localparam('fsm_rd_data_idle', 0)
+        fsm_rd_data_read = tb.Localparam('fsm_rd_data_read', 1)
+
+        tb.Always(Posedge(tb_clk))(
+            If(tb_rst)(
+                pe_output_data_read(0),
+                fsm_rd_data(fsm_rd_data_idle),
+                rd_flag(0)
+            ).Else(
+                pe_output_data_read(1),
+                If(pe_output_data_valid)(
+                    Display('Pos -: sum %d qty %d', pe_output_data_sum, pe_output_data_qty)
+                ),
+            )
+        )
+        tb.EmbeddedCode('\n//PE test Control - End')
+
+        params = []
+        con = [('clk', tb_clk),
+               ('rst', tb_rst),
+               ('config_input_done', tb_config_input_done),
+               ('config_input', pe_config_input),
+               ('config_output', pe_config_output),
+               ('output_data_read', pe_output_data_read),
+               ('output_data_valid', pe_output_data_valid),
+               ('output_data_sum', pe_output_data_sum),
+               ('output_data_qty', pe_output_data_qty),
+               ('done', pe_done)
+               ]
+        hist_mem_bit_depth = len(nodes) if hist_mem_bit_depth > len(nodes) else hist_mem_bit_depth
+        pe = self.components.create_pe(nodes, treated_functions, hist_mem_bit_depth, std_comm_width)
+        tb.Instance(pe, pe.name, params, con)
+
+        tb.EmbeddedCode('\n//Simulation sector - Begin')
+        initialize_regs(tb, {'tb_clk': 0, 'tb_rst': 1})
+
+        simulation.setup_waveform(tb)
+
+        tb.Initial(
+            EmbeddedCode('@(posedge tb_clk);'),
+            EmbeddedCode('@(posedge tb_clk);'),
+            EmbeddedCode('@(posedge tb_clk);'),
+            tb_rst(0),
+            # Delay(100000), Finish()
+        )
+        tb.EmbeddedCode('always #5tb_clk=~tb_clk;')
+
+        tb.Always(Posedge(tb_clk))(
+            If(pe_done)(
+                # Display('ACC DONE!'),
+                Finish()
+            )
+        )
+
+        tb.EmbeddedCode('\n//Simulation sector - End')
+        tb.to_verilog("../test_benches/pe_test_bench.v")
+        sim = simulation.Simulator(tb, sim='iverilog')
+        rslt = sim.run()
+        print(rslt)
     def create_xor_bit_counter_3b_test_bench(self):
         # DATA PRODUCER ------------------------------------------------------------------------------------------------
         dp_output_data_width = 6
@@ -81,7 +201,7 @@
                ('output_data', xbc3_output_data)
                ]
 
-        xbc3 = self.components.create_xor_bit_counter_3b()
+        xbc3 = self.components.create_hamming_distance_3b()
         tb.Instance(xbc3, xbc3.name, params, con)
 
         tb_done.assign(tb_dp_done & ~xbc3_output_data_valid)

@@ -1,10 +1,10 @@
 from builtins import len
-
-from apt_pkg import init
 from veriloggen import *
-from src.Components import Components
-from src.utils import initialize_regs, treat_functions, readGRN
-from math import pow, ceil, log2
+
+from src.derrida_accelerator import GrnDerridaPlotAccelerator
+from math import pow, ceil, log2, floor
+
+from src.utils import initialize_regs
 
 p = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if not p in sys.path:
@@ -13,110 +13,141 @@ if not p in sys.path:
 
 class TestBenches:
 
-    def __init__(self):
-        self.components = Components()
+    def __init__(self, grn_arch_file, copies_qty=1, std_comm_width=32):
+        self.grn_arch_file = grn_arch_file
+        self.std_comm_width = std_comm_width
+        self.drdp = GrnDerridaPlotAccelerator(grn_arch_file, copies_qty, std_comm_width)
 
-    def create_pe_test_bench_hw(self, benchmark, hist_mem_bit_depth, init_state=0, end_state=31):
-        functions = sorted(readGRN(benchmark))
-        nodes, treated_functions = treat_functions(functions)
-        std_comm_width = 32
-
+    def create_grn_derrida_plot_test_bench_hw(self):
         # TEST BENCH MODULE --------------------------------------------------------------------------------------------
         tb = Module('test_bench')
 
         tb.EmbeddedCode('\n//Standar I/O signals - Begin')
         tb_clk = tb.Reg('tb_clk')
         tb_rst = tb.Reg('tb_rst')
+        tb_start_reg = tb.Reg('tb_start_reg')
         tb.EmbeddedCode('//Standar I/O signals - End')
 
-        tb.EmbeddedCode('\n//Configuration Signals - Begin')
-        tb_config_input_done = tb.Reg('tb_config_input_done')
-        pe_config_input_valid = tb.Reg('pe_config_input_valid')
-        pe_config_input = tb.Reg('pe_config_input', std_comm_width)
-        pe_config_output = tb.Wire('pe_config_output', std_comm_width)
-        tb.EmbeddedCode('//Configuration Signals - End')
+        # derrida plot accelerator instantiation regs and wires - Begin ------------------------------------------------
+        tb.EmbeddedCode('\n//derrida plot accelerator instantiation regs and wires - end')
+        drdp_acc_user_done_rd_data = tb.Reg('drdp_acc_user_done_rd_data', self.drdp.get_num_in())
+        drdp_acc_user_done_wr_data = tb.Reg('drdp_acc_user_done_wr_data', self.drdp.get_num_out())
+        drdp_acc_user_request_read = tb.Wire('drdp_acc_user_request_read', self.drdp.get_num_in())
+        drdp_acc_user_read_data_valid = tb.Reg('drdp_acc_user_read_data_valid', self.drdp.get_num_in())
+        drdp_acc_user_read_data = tb.Reg('drdp_acc_user_read_data', self.std_comm_width * self.drdp.get_num_in())
+        drdp_acc_user_available_write = tb.Reg('drdp_acc_user_available_write', self.drdp.get_num_out())
+        drdp_acc_user_request_write = tb.Wire('drdp_acc_user_request_write', self.drdp.get_num_out())
+        drdp_acc_user_write_data = tb.Wire('drdp_acc_user_write_data', self.std_comm_width * self.drdp.get_num_out())
+        drdp_acc_user_done = tb.Wire('drdp_acc_user_done')
+        tb.EmbeddedCode('//derrida plot accelerator instantiation regs and wires - end')
+        # derrida plot accelerator instantiation regs and wires - end --------------------------------------------------
 
-        tb.EmbeddedCode('\n//Data Transfer Signals - Begin')
-        pe_output_data_read = tb.Reg('pe_output_data_read')
-        pe_output_data_valid = tb.Wire('pe_output_data_valid')
-        pe_output_data_sum = tb.Wire('pe_output_data_sum', std_comm_width)
-        pe_output_data_qty = tb.Wire('pe_output_data_qty', std_comm_width)
-        tb.EmbeddedCode('//Data Transfer Signals - End')
-
-        pe_done = tb.Wire('pe_done')
-
-        tb.EmbeddedCode('\n')
-        bits_grn = len(nodes)
-        qty_conf = ceil(bits_grn / std_comm_width) * 2
+        # Config Rom configuration regs and wires - Begin --------------------------------------------------------------
+        tb.EmbeddedCode('\n//Config Rom configuration regs and wires - Begin')
+        bits_grn = self.drdp.nodes_qty
+        qty_conf = ceil(bits_grn / self.drdp.std_comm_width) * 2 * self.drdp.copies_qty
+        step = floor(pow(2, bits_grn)) // self.drdp.copies_qty
+        configs = []
+        for i in range(self.drdp.copies_qty):
+            configs.append(i * step)
+            configs.append((i * step) + step - 1)
+        configs[len(configs) - 1] = ceil(pow(2, bits_grn)) - 1
         config_counter = tb.Reg('config_counter', ceil(log2(qty_conf)) + 1)
-        config_rom = tb.Wire('config_rom', std_comm_width, qty_conf)
+        config_rom = tb.Wire('config_rom', self.drdp.std_comm_width, qty_conf)
+        tb.EmbeddedCode('//Config Rom configuration regs and wires - End')
+        # Config Rom configuration regs and wires - End ----------------------------------------------------------------
 
-        tb.EmbeddedCode('\n//Configuraton Memory section - Begin')
+        # Data Producer regs and wires - Begin -------------------------------------------------------------------------
+        tb.EmbeddedCode('\n//Data Producer regs and wires - Begin')
+        fsm_produce_data = tb.Reg('fsm_produce_data', 2)
+        fsm_init = tb.Localparam('fsm_init', 0)
+        fsm_produce = tb.Localparam('fsm_produce', 1)
+        fsm_done = tb.Localparam('fsm_done', 2)
+        tb.EmbeddedCode('\n//Data Producer regs and wires - End')
+        # Data Producer regs and wires - End ---------------------------------------------------------------------------
 
-        for i in range(qty_conf):
-            if i < qty_conf / 2:
-                config_rom[i].assign(init_state & 0xffff)
-                init_state = init_state >> std_comm_width
-            else:
-                config_rom[i].assign(end_state & 0xffff)
-                end_state = end_state >> std_comm_width
-        tb.EmbeddedCode('\n//Configuraton Memory section - End')
-
-        tb.EmbeddedCode('\n//PE test Control - Begin')
+        # Data Producer - Begin ----------------------------------------------------------------------------------------
+        tb.EmbeddedCode('\n//Data Producer - Begin')
         tb.Always(Posedge(tb_clk))(
             If(tb_rst)(
                 config_counter(0),
-                tb_config_input_done(0),
+                drdp_acc_user_read_data_valid(0),
+                drdp_acc_user_done_rd_data(0),
+                fsm_produce_data(fsm_init),
             ).Else(
-                If(config_counter == qty_conf)(
-                    tb_config_input_done(1),
-                    pe_config_input_valid(0),
-                ).Else(
-                    config_counter.inc(),
-                    pe_config_input_valid(1),
-                    pe_config_input(config_rom[config_counter])
+                Case(fsm_produce_data)(
+                    When(fsm_init)(
+                        fsm_produce_data(fsm_produce)
+                    ),
+                    When(fsm_produce)(
+                        drdp_acc_user_read_data_valid(Int(1, 1, 10)),
+                        drdp_acc_user_read_data(config_rom[config_counter]),
+                        If(AndList(drdp_acc_user_request_read, drdp_acc_user_read_data_valid))(
+                            config_counter(config_counter + 1),
+                            drdp_acc_user_read_data_valid(Int(0, 1, 10)),
+                        ),
+                        If(config_counter == qty_conf)(
+                            drdp_acc_user_read_data_valid(Int(0, 1, 10)),
+                            fsm_produce_data(fsm_done)
+                        )
+                    ),
+                    When(fsm_done)(
+                        drdp_acc_user_done_rd_data(Int(1, 1, 10))
+                    ),
                 )
             )
         )
+        tb.EmbeddedCode('//Data Producer - End')
+        # Data Producer - End ------------------------------------------------------------------------------------------
 
-        rd_flag = tb.Reg('rd_flag')
-        fsm_rd_data = tb.Reg('fsm_rd_data', 1)
-        fsm_rd_data_idle = tb.Localparam('fsm_rd_data_idle', 0)
-        fsm_rd_data_read = tb.Localparam('fsm_rd_data_read', 1)
-
+        # Data Consumer - Begin ----------------------------------------------------------------------------------------
+        tb.EmbeddedCode('\n//Data Consumer - Begin')
         tb.Always(Posedge(tb_clk))(
             If(tb_rst)(
-                pe_output_data_read(0),
-                fsm_rd_data(fsm_rd_data_idle),
-                rd_flag(0)
+                drdp_acc_user_available_write(0),
             ).Else(
-                pe_output_data_read(1),
-                If(pe_output_data_valid)(
-                    Display('Pos -: sum %d qty %d', pe_output_data_sum, pe_output_data_qty)
-                ),
+                drdp_acc_user_available_write(1),
+                If(drdp_acc_user_request_write)(
+                    Display("%d", drdp_acc_user_write_data),
+                    drdp_acc_user_available_write(0),
+                )
             )
         )
-        tb.EmbeddedCode('\n//PE test Control - End')
+        tb.EmbeddedCode('//Data Consumer - Begin')
+        # Data Consumer - End ------------------------------------------------------------------------------------------
 
-        params = []
-        con = [('clk', tb_clk),
-               ('rst', tb_rst),
-               ('config_input_done', tb_config_input_done),
-               ('config_input_valid', pe_config_input_valid),
-               ('config_input', pe_config_input),
-               ('config_output', pe_config_output),
-               ('output_data_read', pe_output_data_read),
-               ('output_data_valid', pe_output_data_valid),
-               ('output_data_sum', pe_output_data_sum),
-               ('output_data_qty', pe_output_data_qty),
-               ('done', pe_done)
-               ]
-        hist_mem_bit_depth = len(nodes) if hist_mem_bit_depth > len(nodes) else hist_mem_bit_depth
-        pe = self.components.create_pe(nodes, treated_functions, hist_mem_bit_depth, std_comm_width)
-        tb.Instance(pe, pe.name, params, con)
+        # Config Rom configuration - Begin -----------------------------------------------------------------------------
+        tb.EmbeddedCode('\n//Config Rom configuration - Begin')
+        config_rom_counter = 0
+        for conf in configs:
+            for i in range(ceil(bits_grn / self.drdp.std_comm_width)):
+                config_rom[config_rom_counter].assign(Int(conf & (self.drdp.std_comm_width - 1), config_rom.width, 10))
+                conf = conf >> self.drdp.std_comm_width
+                config_rom_counter = config_rom_counter + 1
+        tb.EmbeddedCode('//Config Rom configuration - End')
+        # Config Rom configuration - End -------------------------------------------------------------------------------
 
-        tb.EmbeddedCode('\n//Simulation sector - Begin')
-        initialize_regs(tb, {'tb_clk': 0, 'tb_rst': 1})
+        # derrida plot accelerator instantiation - Begin -----------------------------------------------------------------
+        par = []
+        con = [
+            ('clk', tb_clk),
+            ('rst', tb_rst),
+            ('start', tb_start_reg),
+            ('acc_user_done_rd_data', drdp_acc_user_done_rd_data),
+            ('acc_user_done_wr_data', drdp_acc_user_done_wr_data),
+            ('acc_user_request_read', drdp_acc_user_request_read),
+            ('acc_user_read_data_valid', drdp_acc_user_read_data_valid),
+            ('acc_user_read_data', drdp_acc_user_read_data),
+            ('acc_user_available_write', drdp_acc_user_available_write),
+            ('acc_user_request_write', drdp_acc_user_request_write),
+            ('acc_user_write_data', drdp_acc_user_write_data),
+            ('acc_user_done', drdp_acc_user_done)
+        ]
+        drdp_acc = self.drdp.get()
+        tb.Instance(drdp_acc, drdp_acc.name, par, con)
+        # derrida plot accelerator instantiation - end -----------------------------------------------------------------
+
+        initialize_regs(tb, {'tb_clk': 0, 'tb_rst': 1, 'tb_start_reg': 0})
 
         simulation.setup_waveform(tb)
 
@@ -125,30 +156,33 @@ class TestBenches:
             EmbeddedCode('@(posedge tb_clk);'),
             EmbeddedCode('@(posedge tb_clk);'),
             tb_rst(0),
-            # Delay(100000), Finish()
+            tb_start_reg(1),
+            Delay(1000000), Finish()
         )
         tb.EmbeddedCode('always #5tb_clk=~tb_clk;')
 
         tb.Always(Posedge(tb_clk))(
-            If(pe_done)(
+            If(drdp_acc_user_done)(
                 # Display('ACC DONE!'),
                 Finish()
             )
         )
 
         tb.EmbeddedCode('\n//Simulation sector - End')
-        tb.to_verilog("../test_benches/pe_test_bench.v")
+        tb.to_verilog('../test_benches/grn_derrida_plot_acc_test_bench_' + str(self.drdp.nodes_qty) + '_nodes_' + str(
+            self.drdp.copies_qty) + '_copies_' + str(int(pow(2, bits_grn))) + '_states.v')
         sim = simulation.Simulator(tb, sim='iverilog')
         rslt = sim.run()
         print(rslt)
 
-    def create_pe_test_bench_cpu(self, benchmark, init_state=0, end_state=31):
+    def create_grn_derrida_plot_test_bench_cpu(self, init_state=0, end_state=31):
 
-        functions = sorted(readGRN(benchmark))
-        nodes, treated_functions = treat_functions(functions)
+        functions = self.drdp.functions
+        nodes = self.drdp.nodes
+        treated_functions = self.drdp.treated_functions
 
-        sum = [0 for i in range(int(pow(2, len(nodes))))]
-        qty = [0 for i in range(int(pow(2, len(nodes))))]
+        sum = [0 for i in range(len(nodes) + 1)]
+        qty = [0 for i in range(len(nodes) + 1)]
 
         nodes_a = {node: False for node in nodes}
         nodes_b = {node: False for node in nodes}
@@ -205,10 +239,6 @@ class TestBenches:
             print('Pos ' + str(i) + ': sum ' + str(sum[i]) + ' qty ' + str(qty[i]))
 
 
-test_benches = TestBenches()
-test_benches.create_pe_test_bench_hw('../Benchmarks/Benchmark_5.txt', 5)
-test_benches.create_pe_test_bench_cpu('../Benchmarks/Benchmark_5.txt')
-# test_benches.create_pe_test_bench('../Benchmarks/B_bronchiseptica.txt',10)
-# test_benches.create_histogram_memory_test_bench()
-# test_benches.create_grn_test_bench('../Benchmarks/Benchmark_5.txt')
-# test_benches.create_xor_bit_counter_3b_test_bench()
+test_benches = TestBenches('../Benchmarks/Benchmark_5.txt', 15, 32)
+test_benches.create_grn_derrida_plot_test_bench_hw()
+test_benches.create_grn_derrida_plot_test_bench_cpu(0, 31)
