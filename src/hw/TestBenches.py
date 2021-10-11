@@ -1,10 +1,10 @@
 from builtins import len
 from veriloggen import *
 
-from src.derrida_accelerator import GrnDerridaPlotAccelerator
+from src.hw.derrida_accelerator import GrnDerridaPlotAccelerator
 from math import pow, ceil, log2, floor
 
-from src.utils import initialize_regs
+from src.hw.utils import initialize_regs
 
 p = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if not p in sys.path:
@@ -239,6 +239,6 @@ class TestBenches:
             print('Pos ' + str(i) + ': sum ' + str(sum[i]) + ' qty ' + str(qty[i]))
 
 
-test_benches = TestBenches('../Benchmarks/Benchmark_5.txt', 15, 32)
+test_benches = TestBenches('../../Benchmarks/Benchmark_5.txt', 3, 32)
 test_benches.create_grn_derrida_plot_test_bench_hw()
 test_benches.create_grn_derrida_plot_test_bench_cpu(0, 31)

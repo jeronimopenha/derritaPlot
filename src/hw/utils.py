@@ -127,7 +127,7 @@ def find_files(dir, typeFile, extensions):
                         if a == "rtl":
                             break
                         ind = ind + 1
-                    filename = "../.."
+                    filename = "../../.."
                     for i in range(ind, len(aux)):
                         filename = filename + "/" + aux[i]
                     str_sim = str_sim + filename + "\n"

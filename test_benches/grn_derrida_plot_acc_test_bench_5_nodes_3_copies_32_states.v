@@ -55,7 +55,7 @@ module test_bench
           drdp_acc_user_read_data <= config_rom[config_counter];
           if(drdp_acc_user_request_read && drdp_acc_user_read_data_valid) begin
             config_counter <= config_counter + 1;
-            drdp_acc_user_read_data_valid <= 1'd0;
+            zdrdp_acc_user_read_data_valid <= 1'd0;
           end 
           if(config_counter == 6) begin
             drdp_acc_user_read_data_valid <= 1'd0;

@@ -1,7 +1,7 @@
 from veriloggen import *
 
-from src.grn_derrida_plot_components import GrnDerridaPlotComponents
-from src.utils import initialize_regs
+from src.hw.grn_derrida_plot_components import GrnDerridaPlotComponents
+from src.hw.utils import initialize_regs
 
 
 class GrnDerridaPlotAws:

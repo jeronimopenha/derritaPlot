@@ -1,7 +1,7 @@
 import math
 from veriloggen import *
-from src.grn_derrida_plot_aws import GrnDerridaPlotAws
-from src.utils import treat_functions, readGRN, initialize_regs
+from src.hw.grn_derrida_plot_aws import GrnDerridaPlotAws
+from src.hw.utils import treat_functions, readGRN, initialize_regs
 
 
 class GrnDerridaPlotAccelerator:
